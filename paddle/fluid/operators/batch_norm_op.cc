@@ -19,14 +19,10 @@ limitations under the License. */
 #include <unordered_map>
 
 #include "paddle/fluid/framework/data_layout.h"
-#ifdef PADDLE_WITH_DNNL
+#include "paddle/fluid/framework/infershape_utils.h"
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
-
 #include "paddle/fluid/prim/utils/static/composite_grad_desc_maker.h"
 #include "paddle/fluid/prim/utils/static/desc_tensor.h"
-
-#include "paddle/fluid/framework/infershape_utils.h"
 #include "paddle/phi/infermeta/multiary.h"
 
 namespace paddle::operators {
@@ -107,10 +103,10 @@ void BatchNormOp::InferShape(framework::InferShapeContext *ctx) const {
           "= [%s], the dimension of input X = [%d]",
           x_dims,
           x_dims.size()));
-  VLOG(4) << ctx->IsRunMKLDNNKernel();
+  VLOG(4) << ctx->IsRunONEDNNKernel();
   VLOG(4) << data_layout;
   const int64_t C =
-      ((ctx->IsRunMKLDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
+      ((ctx->IsRunONEDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
            ? x_dims[1]
            : x_dims[x_dims.size() - 1]);
 
@@ -350,7 +346,7 @@ void BatchNormGradOp::InferShape(framework::InferShapeContext *ctx) const {
                     common::errors::NotFound(
                         "Output(Scale@GRAD) and Output(Bias@GRAD) must be null "
                         "or not be null at same time. But now, "
-                        "has Scale@Grad=[%d], has Bias@GRAD=[%d]",
+                        "has Scale@GRAD=[%d], has Bias@GRAD=[%d]",
                         has_scale_grad,
                         has_bias_grad));
 
@@ -370,7 +366,7 @@ void BatchNormGradOp::InferShape(framework::InferShapeContext *ctx) const {
       common::StringToDataLayout(ctx->Attrs().Get<std::string>("data_layout"));
 
   const int C = static_cast<int>(
-      ((ctx->IsRunMKLDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
+      ((ctx->IsRunONEDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
            ? x_dims[1]
            : x_dims[x_dims.size() - 1]));
 
@@ -511,7 +507,7 @@ void BatchNormDoubleGradOp::InferShape(
   const DataLayout data_layout =
       common::StringToDataLayout(ctx->Attrs().Get<std::string>("data_layout"));
   const int C = static_cast<int>(
-      ((ctx->IsRunMKLDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
+      ((ctx->IsRunONEDNNKernel() == true) || (data_layout == DataLayout::kNCHW)
            ? x_dims[1]
            : x_dims[x_dims.size() - 1]));
 

@@ -39,7 +39,6 @@ class Node;
  * When a op's inputs and outputs is determined before feeding data to the
  * model, we can remove this op from the model. This ConstantFolding pass can
  * remove all these like ops.
- *
  */
 
 namespace paddle {
@@ -174,7 +173,7 @@ void ConstantFoldingPass::ApplyImpl(ir::Graph *graph) const {
         // useless out_node can be removed, not need set it persistable !
         if (out_node->outputs.empty()) remove_nodes.emplace(out_node);
       }
-      op->Run(*local_scope, phi::CPUPlace());
+      op->Run(*local_scope, CPUPlace());
       folded_op_num++;
       for (auto out_node : op_node->outputs) {
         // this out_node is useless, do not set it persistable

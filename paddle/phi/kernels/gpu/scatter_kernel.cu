@@ -15,7 +15,6 @@
 #include "paddle/phi/kernels/scatter_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/scatter.cu.h"
@@ -29,7 +28,16 @@ void ScatterKernel(const Context &dev_ctx,
                    const DenseTensor &updates,
                    bool overwrite,
                    DenseTensor *out) {
-  phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+  if (index.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    return;
+  }
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   // use template class to support int32_t and int64_t
   auto index_type = index.dtype();
   bool index_type_match =
@@ -43,10 +51,10 @@ void ScatterKernel(const Context &dev_ctx,
                         phi::DataType::INT32,
                         phi::DataType::INT64));
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUScatterAssign<T, int32_t>(
+    funcs::GPUScatterAssign<T, int32_t>(
         dev_ctx, updates, index, out, overwrite);
   } else {
-    phi::funcs::GPUScatterAssign<T, int64_t>(
+    funcs::GPUScatterAssign<T, int64_t>(
         dev_ctx, updates, index, out, overwrite);
   }
 }
@@ -61,5 +69,5 @@ PD_REGISTER_KERNEL(scatter,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

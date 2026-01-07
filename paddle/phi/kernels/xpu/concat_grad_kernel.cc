@@ -43,8 +43,8 @@ void ConcatGradKernel(const Context& dev_ctx,
       nullptr,
       common::errors::InvalidArgument("The input should not be null."));
   auto axis = axis_scalar.to<int>();
-  axis = phi::funcs::ComputeAxis(static_cast<int64_t>(axis),
-                                 static_cast<int64_t>(x[0]->dims().size()));
+  axis = funcs::ComputeAxis(static_cast<int64_t>(axis),
+                            static_cast<int64_t>(x[0]->dims().size()));
   // get output tensor that the name is not kEmptyVarName
   std::vector<XPUType*> ptrs(outs.size());
   for (size_t j = 0; j < outs.size(); ++j) {
@@ -89,14 +89,25 @@ void ConcatGradKernel(const Context& dev_ctx,
   }
   xdims_list[axis] = total_length;
 
-  int r =
-      xpu::split<XPUType>(dev_ctx.x_context(),
-                          reinterpret_cast<const XPUType*>(out_grad.data<T>()),
-                          ptrs,
-                          xdims_list,
-                          split_list,
-                          axis);
-  PADDLE_ENFORCE_XDNN_SUCCESS(r, "concat_grad");
+  std::vector<XPUType*> ptrs_nozero;
+  std::vector<int64_t> split_list_nozero;
+  for (size_t i = 0; i < x.size(); i++) {
+    if (split_list[i] != 0) {
+      ptrs_nozero.push_back(ptrs[i]);
+      split_list_nozero.push_back(split_list[i]);
+    }
+  }
+
+  if (ptrs_nozero.size() != 0) {
+    int r = xpu::split<XPUType>(
+        dev_ctx.x_context(),
+        reinterpret_cast<const XPUType*>(out_grad.data<T>()),
+        ptrs_nozero,
+        xdims_list,
+        split_list_nozero,
+        axis);
+    PADDLE_ENFORCE_XDNN_SUCCESS(r, "concat_grad");
+  }
 }
 
 }  // namespace phi
@@ -106,5 +117,5 @@ PD_REGISTER_KERNEL(concat_grad,
                    ALL_LAYOUT,
                    phi::ConcatGradKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

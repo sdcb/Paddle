@@ -553,7 +553,6 @@ class ScaleDotProductPattern(BasePattern):
         value_states,
         attention_mask,
     ):
-
         bsz, q_len, num_heads, head_dim = query_states.shape
         _, kv_seq_len, _, _ = value_states.shape
 
@@ -757,7 +756,7 @@ class MLP3Pattern(BasePattern):
     def apply(hidden_states, gate_weight, up_weight, down_weight):
         gate = paddle.matmul(hidden_states, gate_weight)
         up = paddle.matmul(hidden_states, up_weight)
-        tmp = paddle.incubate.nn.functional.swiglu(gate, up)
+        tmp = paddle.nn.functional.swiglu(gate, up)
         out = paddle.matmul(tmp, down_weight)
         return out
 
@@ -1263,7 +1262,6 @@ class MLP2Pattern(BasePattern):
 
 
 def match_pattern(pattern, program):
-
     def _compare_op_node(src, tgt):
         """Compare whether two op nodes are equivalent."""
         if src.name() != tgt.name():

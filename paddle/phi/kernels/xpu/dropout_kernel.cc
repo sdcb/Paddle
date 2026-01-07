@@ -48,8 +48,8 @@ void DropoutRawKernel(const Context& dev_ctx,
   if (!is_test && mask) {
     int seed_data = 0;
     if (seed_tensor.get_ptr() != nullptr) {
-      if ((seed_tensor->place()).GetType() == phi::AllocationType::XPU) {
-        memory_utils::Copy(phi::CPUPlace(),
+      if ((seed_tensor->place()).GetType() == AllocationType::XPU) {
+        memory_utils::Copy(CPUPlace(),
                            &seed_data,
                            seed_tensor->place(),
                            seed_tensor->data<int>(),
@@ -138,8 +138,8 @@ PD_REGISTER_KERNEL(dropout,
                    ALL_LAYOUT,
                    phi::DropoutRawKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
   kernel->OutputAt(1).SetDataType(phi::DataType::UINT8);
 }

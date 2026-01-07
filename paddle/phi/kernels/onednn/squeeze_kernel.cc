@@ -66,9 +66,9 @@ void SqueezeKernel(const Context& dev_ctx,
   // follows default dtype instead of oneDNN dtype, so here manually change it
   if ((x_dims_tz >= 3) &&
       (phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-           phi::DataLayout::NDHWC ||
+           DataLayout::NDHWC ||
        phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-           phi::DataLayout::NHWC)) {
+           DataLayout::NHWC)) {
     int axes_size = tmp.size();
     for (int i = 0; i < axes_size; i++) {
       if (tmp[i] < 0) {
@@ -103,11 +103,11 @@ void SqueezeWithXShapeKernel(const Context& dev_ctx,
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    squeeze, OneDNN, ONEDNN, phi::SqueezeKernel, float, phi::dtype::bfloat16) {}
+    squeeze, OneDNN, ONEDNN, phi::SqueezeKernel, float, phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(squeeze_with_xshape,
                    OneDNN,
                    ONEDNN,
                    phi::SqueezeWithXShapeKernel,
                    float,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

@@ -16,7 +16,6 @@
 #include <string>
 
 #include "paddle/common/errors.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -135,7 +134,7 @@ void FusionSeqConvEltAddReluKernel(const Context& dev_ctx,
       }
     }
   }
-  phi::funcs::FCFunctor<Context, T> fc;
+  funcs::FCFunctor<Context, T> fc;
   fc(dev_ctx,
      x_dims[0],
      w_dims[1],

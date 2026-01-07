@@ -22,13 +22,12 @@
 
 namespace phi {
 
-static dnnl::memory::data_type GetDstType(
-    bool is_int8,
-    bool is_bfloat16,
-    bool force_fp32_output,
-    std::string fuse_activation,
-    bool fuse_residual_conn,
-    const phi::DenseTensor* residual_param) {
+static dnnl::memory::data_type GetDstType(bool is_int8,
+                                          bool is_bfloat16,
+                                          bool force_fp32_output,
+                                          std::string fuse_activation,
+                                          bool fuse_residual_conn,
+                                          const DenseTensor* residual_param) {
   auto dst_dt = dnnl::memory::data_type::f32;
   if (is_int8) {
     dst_dt = (fuse_activation == "relu" || fuse_activation == "relu6")
@@ -52,23 +51,21 @@ static dnnl::memory::data_type GetDstType(
   return dst_dt;
 }
 
-#define PD_VISIT_FLOAT_AND_INT8_TYPES(TYPE, NAME, ...)                    \
-  [&] {                                                                   \
-    const auto& __dtype__ = TYPE;                                         \
-    switch (__dtype__) {                                                  \
-      PD_PRIVATE_CASE_TYPE(                                               \
-          NAME, ::paddle::DataType::FLOAT32, float, __VA_ARGS__)          \
-      PD_PRIVATE_CASE_TYPE(                                               \
-          NAME, ::paddle::DataType::INT8, int8_t, __VA_ARGS__)            \
-      PD_PRIVATE_CASE_TYPE(NAME,                                          \
-                           ::paddle::DataType::BFLOAT16,                  \
-                           ::phi::dtype::bfloat16,                        \
-                           __VA_ARGS__)                                   \
-      default:                                                            \
-        PD_THROW("function " #NAME " is not implemented for data type `", \
-                 __dtype__,                                               \
-                 "`");                                                    \
-    }                                                                     \
+#define PD_VISIT_FLOAT_AND_INT8_TYPES(TYPE, NAME, ...)                      \
+  [&] {                                                                     \
+    const auto& __dtype__ = TYPE;                                           \
+    switch (__dtype__) {                                                    \
+      PD_PRIVATE_CASE_TYPE(                                                 \
+          NAME, ::paddle::DataType::FLOAT32, float, __VA_ARGS__)            \
+      PD_PRIVATE_CASE_TYPE(                                                 \
+          NAME, ::paddle::DataType::INT8, int8_t, __VA_ARGS__)              \
+      PD_PRIVATE_CASE_TYPE(                                                 \
+          NAME, ::paddle::DataType::BFLOAT16, ::phi::bfloat16, __VA_ARGS__) \
+      default:                                                              \
+        PD_THROW("function " #NAME " is not implemented for data type `",   \
+                 __dtype__,                                                 \
+                 "`");                                                      \
+    }                                                                       \
   }()
 
 template <typename T, typename T_out>
@@ -84,7 +81,7 @@ void ComputeFP32(const OneDNNContext& dev_ctx,
                  int groups,
                  const std::string& data_format,
                  bool is_test,
-                 bool is_BFLOAT16,
+                 bool is_bfloat16,
                  const std::string& fuse_activation,
                  bool fuse_residual_conn,
                  bool force_fp32_output,
@@ -108,7 +105,7 @@ void ComputeFP32(const OneDNNContext& dev_ctx,
                                                              groups,
                                                              data_format,
                                                              is_test,
-                                                             is_BFLOAT16,
+                                                             is_bfloat16,
                                                              fuse_activation,
                                                              fuse_residual_conn,
                                                              force_fp32_output,
@@ -157,7 +154,7 @@ void ComputeINT8(const OneDNNContext& dev_ctx,
                  int groups,
                  const std::string& data_format,
                  bool is_test,
-                 bool is_BFLOAT16,
+                 bool is_bfloat16,
                  const std::string& fuse_activation,
                  bool fuse_residual_conn,
                  bool force_fp32_output,
@@ -196,7 +193,7 @@ void ComputeINT8(const OneDNNContext& dev_ctx,
                                                              groups,
                                                              data_format,
                                                              is_test,
-                                                             is_BFLOAT16,
+                                                             is_bfloat16,
                                                              fuse_activation,
                                                              fuse_residual_conn,
                                                              force_fp32_output,

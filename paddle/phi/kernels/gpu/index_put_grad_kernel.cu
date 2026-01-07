@@ -98,7 +98,7 @@ void LaunchIndexPutGradCudaKernel(
     DenseTensor* x_grad) {
   phi::Allocator::AllocationPtr indices_holder_1, indices_holder_2;
   if (x_grad) {
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     if (!accumulate) {
       T* x_grad_data = x_grad->data<T>();
 
@@ -251,11 +251,11 @@ void IndexPutGradKernel(const Context& dev_ctx,
           "The data type of tensor value must be same to the data type "
           "of tensor x."));
   std::vector<DenseTensor> tmp_args;
-  std::vector<const phi::DenseTensor*> int_indices_v =
+  std::vector<const DenseTensor*> int_indices_v =
       funcs::DealWithBoolIndices<T, Context>(dev_ctx, indices, &tmp_args);
   if (int_indices_v.empty()) {
     if (x_grad) {
-      phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+      Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
     }
     if (value_grad) {
       FullKernel<T, Context>(dev_ctx,
@@ -270,7 +270,7 @@ void IndexPutGradKernel(const Context& dev_ctx,
   auto bd_dim = funcs::BroadCastTensorsDims(int_indices_v);
 
   std::vector<int64_t> res_dim_v(common::vectorize(bd_dim));
-  std::vector<const phi::DenseTensor*> res_indices_v(x.dims().size(), nullptr);
+  std::vector<const DenseTensor*> res_indices_v(x.dims().size(), nullptr);
   std::vector<DenseTensor> tmp_res_indices_v;
   std::vector<DenseTensor> range_tensor_v;
 
@@ -306,7 +306,7 @@ PD_REGISTER_KERNEL(index_put_grad,
                    int16_t,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

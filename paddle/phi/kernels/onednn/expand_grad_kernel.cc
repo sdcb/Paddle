@@ -29,8 +29,7 @@ void ExpandGradKernel(const Context& dev_ctx,
 
   if ((in_grad && in_grad->numel() == 0) || out_grad.numel() == 0) {
     dev_ctx.template Alloc<T>(in_grad);
-    phi::Full<T, Context>(
-        dev_ctx, phi::IntArray(common::vectorize(in_grad->dims())), 0, in_grad);
+    Full<T, Context>(dev_ctx, in_grad->dims(), 0, in_grad);
     return;
   }
 
@@ -98,9 +97,5 @@ void ExpandGradKernel(const Context& dev_ctx,
 }
 }  // namespace phi
 
-PD_REGISTER_KERNEL(expand_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::ExpandGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    expand_grad, OneDNN, ONEDNN, phi::ExpandGradKernel, float, phi::bfloat16) {}

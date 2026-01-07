@@ -16,6 +16,7 @@ limitations under the License. */
 
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/memory/allocation/allocator_facade.h"
+#include "paddle/phi/core/memory/mem_visitor.h"
 #include "paddle/phi/core/stream.h"
 
 namespace paddle::memory {
@@ -30,6 +31,10 @@ AllocationPtr Alloc(const phi::Place& place, size_t size) {
 
 uint64_t Release(const phi::Place& place) {
   return allocation::AllocatorFacade::Instance().Release(place);
+}
+
+size_t Compact(const phi::GPUPlace& place) {
+  return allocation::AllocatorFacade::Instance().Compact(place);
 }
 
 std::shared_ptr<Allocation> AllocShared(const phi::Place& place,
@@ -74,6 +79,13 @@ gpuStream_t GetStream(const std::shared_ptr<Allocation>& allocation) {
   return allocation::AllocatorFacade::Instance().GetStream(allocation);
 }
 
+#endif
+
+#ifdef PADDLE_WITH_XPU
+bool RecordStream(std::shared_ptr<Allocation> allocation, XPUStream stream) {
+  return allocation::AllocatorFacade::Instance().RecordStream(allocation,
+                                                              stream);
+}
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE

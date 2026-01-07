@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "paddle/fluid/pybind/pir.h"
-
 #include <Python.h>
 #include <algorithm>
 #include <iterator>
@@ -63,6 +62,7 @@
 #include "paddle/fluid/pybind/eager_utils.h"
 #include "paddle/fluid/pybind/pir_utils.h"
 #include "paddle/fluid/pybind/pybind_variant_caster.h"
+#include "paddle/fluid/pybind/size.h"
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/distributed/auto_parallel/process_mesh.h"
@@ -337,7 +337,7 @@ void PruneWithInput(const std::vector<pir::Value> &input_vars,
       if (!input_vars_set.empty() && SomeInSet(op_results, input_vars_set)) {
         PADDLE_THROW(common::errors::InvalidArgument(
             "The input_var create by: '{%s}' is not involved in the "
-            "output_vars calculation"
+            "output_vars calculation. "
             "Please remove it from input_vars.",
             op->name()));
       }
@@ -497,18 +497,16 @@ void BindProgram(py::module *m) {
              pir::IrMapping &mapper,
              Block *block) { return self->CopyToBlock(mapper, block); },
           return_value_policy::reference)
-      .def(
-          "list_vars",
-          [](std::shared_ptr<Program> self) {
-            std::vector<pir::Value> vars;
-            for (auto op : self->block()->ops()) {
-              for (auto var : op->results()) {
-                vars.push_back(var);
-              }
-            }
-            return vars;
-          },
-          return_value_policy::reference)
+      .def("list_vars",
+           [](std::shared_ptr<Program> self) {
+             py::list vars;
+             for (auto op : self->block()->ops()) {
+               for (auto var : op->results()) {
+                 vars.append(var);
+               }
+             }
+             return vars;
+           })
       .def("_list_named_vars",
            [](std::shared_ptr<Program> self) {
              return name_analysis::GetAllNamedValues(*self);
@@ -1445,7 +1443,16 @@ void BindValue(py::module *m) {
                              })
       .def_property(
           "shape",
-          [](Value self) { return phi::vectorize(GetValueDims(self)); },
+          [](Value self) {
+            auto array = phi::vectorize(GetValueDims(self));
+            auto ptr =
+                Paddle_Size_NewFromInt64Array(array.data(), array.size());
+            if (!ptr) {
+              throw py::error_already_set();
+            }
+
+            return py::reinterpret_steal<py::object>(ptr);
+          },
           [](Value self, const std::vector<int> &shape) {
             PADDLE_THROW(common::errors::InvalidArgument(
                 "can't set shape when building static graph"));
@@ -1576,6 +1583,38 @@ void BindValue(py::module *m) {
       .def("hash", [](Value self) { return std::hash<pir::Value>{}(self); })
       .def("element_size",
            [](Value self) { return phi::SizeOf(pir::GetValueDtype(self)); })
+      .def(
+          "stride",
+          [](Value self, py::object dim_obj = py::none()) {
+            const auto &dims = paddle::pybind::GetValueDims(self);
+            std::vector<int64_t> strides;
+
+            int64_t step = 1;
+            for (int i = static_cast<int>(dims.size()) - 1; i >= 0; --i) {
+              strides.insert(strides.begin(), step);
+              step *= dims[i];
+            }
+
+            if (dim_obj.is_none()) {
+              return py::cast(strides);
+            }
+
+            int dim = py::cast<int>(dim_obj);
+            dim = dim < 0 ? dim + static_cast<int>(dims.size()) : dim;
+
+            PADDLE_ENFORCE_EQ(dim >= 0 && dim < static_cast<int>(dims.size()),
+                              true,
+                              common::errors::InvalidArgument(
+                                  "Dimension out of range (expected to be in "
+                                  "range of [%d, %d], "
+                                  "but got %d)",
+                                  -static_cast<int>(dims.size()),
+                                  static_cast<int>(dims.size()) - 1,
+                                  dim));
+
+            return py::cast(strides[dim]);
+          },
+          py::arg("dim") = py::none())
       .def("_rename", &name_analysis::RenameValue)
       .def("_has_only_one_name",
            [](Value self) -> bool {
@@ -2933,9 +2972,9 @@ void BindPassManager(pybind11::module *m) {
                } else if (py::isinstance<framework::Scope>(attr.second)) {
                  pass->SetNotOwned(attr.first,
                                    attr.second.cast<framework::Scope *>());
-               } else if (py::isinstance<phi::GPUPlace>(attr.second)) {
+               } else if (py::isinstance<GPUPlace>(attr.second)) {
                  pass->Set(attr.first,
-                           new phi::Place(attr.second.cast<phi::GPUPlace>()));
+                           new phi::Place(attr.second.cast<GPUPlace>()));
                } else {
                  PADDLE_THROW(common::errors::InvalidArgument(
                      "The pass attr is not supported this type."));
@@ -3255,6 +3294,12 @@ void BindDrrPatternContext(pybind11::module *m) {
           },
           pybind11::arg("value"))
       .def(
+          "DoubleAttr",
+          [](drr::ResultPattern &self, double value) {
+            return self.DoubleAttr(value);
+          },
+          pybind11::arg("value"))
+      .def(
           "VectorInt32Attr",
           [](drr::ResultPattern &self, const std::vector<int32_t> &value) {
             return self.VectorInt32Attr(value);
@@ -3340,7 +3385,7 @@ void BindShapeOrDataDimExprs(pybind11::module *m) {
           "is_equal",
           [](symbol::ShapeOrDataDimExprs &self,
              std::vector<int64_t> expect_shape,
-             std::vector<int64_t> expect_data = {}) -> bool {
+             std::vector<int64_t> expect_data) -> bool {
             VLOG(3) << "Start compare shape and data.";
 
             const auto &CompareFunc =
@@ -3411,7 +3456,9 @@ void BindShapeOrDataDimExprs(pybind11::module *m) {
               return shape_status && data_status;
             }
             return shape_status;
-          });
+          },
+          py::arg("expect_shape"),
+          py::arg("expect_data") = py::list());
 }
 
 void BindShapeConstraintIRAnalysis(pybind11::module *m) {

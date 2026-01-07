@@ -31,6 +31,14 @@ from paddle.utils import strtobool
 from .log_util import logger
 
 
+def _share_tensor_ipc_meta(tensor):
+    if tensor is None:
+        return None
+    if core.is_compiled_with_cuda() and not core.is_compiled_with_rocm():
+        return tensor.value().get_tensor()._share_cuda()
+    return None
+
+
 class HOOK_ACTION:
     ALL_REDUCE = 0
     REDUCE = 1
@@ -66,9 +74,9 @@ def get_current_device_type():
                 device_type = current_device.get_device_type()
             except:
                 device_type = "unknown"
-        assert (
-            device_type in alignment.keys()
-        ), f"tensor fusion helper now only support {alignment.keys()}, but got device {device_type} instead."
+        assert device_type in alignment.keys(), (
+            f"tensor fusion helper now only support {alignment.keys()}, but got device {device_type} instead."
+        )
         __current_device_type__ = device_type
     return __current_device_type__
 
@@ -89,11 +97,32 @@ def assign_group_by_size(parameters, group_size=128 * 1024 * 1024):
             group_size += np.prod(parameters[index].shape)
         dtype = parameters[indices[0]].dtype
         bytes = group_size * core.size_of_dtype(dtype)
-        msg = f"group_{group_idx}: {bytes / 1024 ** 2:.4f} MB, dtype: {dtype!s}"
+        msg = f"group_{group_idx}: {bytes / 1024**2:.4f} MB, dtype: {dtype!s}"
         group_msg.append(msg)
 
     logger.info(f"Tensor Fusion Group Info:\n{group_msg}\n")
     return var_groups
+
+
+def get_group_size(parameters, group_size=128 * 1024 * 1024):
+    is_sparse_gradient = [False] * len(parameters)
+
+    group_indices = core.eager_assign_group_by_size(
+        parameters, is_sparse_gradient, [group_size, group_size]
+    )
+
+    opt_states_sizes = []
+    for group_idx, indices in enumerate(group_indices):
+        group_size = 0
+        for index in indices:
+            group_size += np.prod(parameters[index].shape)
+        dtype = parameters[indices[0]].dtype
+        bytes = group_size * core.size_of_dtype(dtype)
+        param_size_G = bytes / 1024**3
+        opt_states_size_G = param_size_G * 12 / core.size_of_dtype(dtype)
+        opt_states_sizes.append(opt_states_size_G)
+
+    return opt_states_sizes
 
 
 def flatten_dense_tensors(
@@ -365,11 +394,7 @@ def build_reduce_scatter_buffer(
     grad_dtype = paddle.float32 if use_main_grad else dtype
 
     param_buffer = paddle.zeros(shape=[total_buffer_size], dtype=dtype)
-    # TODO(@gexiao): Currently only support gpus
-    if core.is_compiled_with_cuda() and not core.is_compiled_with_rocm():
-        param_buffer_ipc_meta = param_buffer.value().get_tensor()._share_cuda()
-    else:
-        param_buffer_ipc_meta = None
+    param_buffer_ipc_meta = _share_tensor_ipc_meta(param_buffer)
     grad_buffer = (
         paddle.zeros(shape=[total_buffer_size], dtype=grad_dtype)
         if not release_grad
@@ -416,7 +441,6 @@ def get_grad_address(param, use_main_grad):
 
 
 class FusedCommBuffer:
-
     class Status(enum.Enum):
         """Status of this bucket, Only useful when param allgather overlap is enabled"""
 
@@ -459,17 +483,17 @@ class FusedCommBuffer:
         self.sync_param_task = None
 
         if self._free_grads_in_comm:
-            assert (
-                acc_steps == 1
-            ), f"No need to use free_grads_in_comm when acc_steps `{acc_steps}` != 1"
-            assert (
-                act == HOOK_ACTION.REDUCE_SCATTER
-            ), "Currently, only support reduce_scatter"
+            assert acc_steps == 1, (
+                f"No need to use free_grads_in_comm when acc_steps `{acc_steps}` != 1"
+            )
+            assert act == HOOK_ACTION.REDUCE_SCATTER, (
+                "Currently, only support reduce_scatter"
+            )
             assert release_grads, "Currently, only support release_grads"
 
-        assert not (
-            self._fuse_param and self._release_grads
-        ), "It's not supported when using fuse_param and release_grad at the same time."
+        assert not (self._fuse_param and self._release_grads), (
+            "It's not supported when using fuse_param and release_grad at the same time."
+        )
 
         self.use_main_grad = (
             use_main_grad
@@ -485,7 +509,7 @@ class FusedCommBuffer:
         self._params_checked_in = 0
         self._grads_to_addr = {}
 
-        self.param_buffer_ipc_meta = None
+        self._param_buffer_meta_tensor = None
 
         self._act = act
         if self._act == HOOK_ACTION.ALL_REDUCE:
@@ -542,7 +566,7 @@ class FusedCommBuffer:
                 self.buffer_size,
                 self.param_storage,
                 self.grad_storage,
-                self.param_buffer_ipc_meta,
+                _,
             ) = build_reduce_scatter_buffer(
                 self._params,
                 self._comm_group.nranks,
@@ -554,8 +578,18 @@ class FusedCommBuffer:
             )
             # hack, for parameter sync in dygraph sharding optimizer after step
             self._params[0].comm_buffer_ref = weakref.ref(self)
+            self._param_buffer_meta_tensor = self.param_storage
         if not self._release_grads:
             self._record_addr()
+
+    def _refresh_param_buffer_ipc_meta(self):
+        if self._param_buffer_meta_tensor is None:
+            return None
+        return _share_tensor_ipc_meta(self._param_buffer_meta_tensor)
+
+    @property
+    def param_buffer_ipc_meta(self):
+        return self._refresh_param_buffer_ipc_meta()
 
     def _record_addr(self):
         for param in self._params:
@@ -606,9 +640,9 @@ class FusedCommBuffer:
             )
 
         if self._act == HOOK_ACTION.REDUCE_SCATTER:
-            self._sharding_param_grad_view[param.name]._grad_buffer = (
-                self.grad_storage
-            )
+            self._sharding_param_grad_view[
+                param.name
+            ]._grad_buffer = self.grad_storage
             tmp_var = self._sharding_param_grad_view[
                 param.name
             ]._slice_grad_from_buffer()
@@ -620,22 +654,19 @@ class FusedCommBuffer:
             )
 
         grad_var = param.main_grad if self.use_main_grad else param.grad
-        assert (
-            grad_var is not None
-        ), f"The current parameter[{param.name}] has no gradient, its stop_grdient is {param.stop_gradient}"
-        grad_var.stop_gradient = True
-        grad_var.flatten_()
 
-        tmp_var.add_(grad_var)
+        if grad_var is not None:
+            grad_var.stop_gradient = True
+            grad_var.flatten_()
+            tmp_var.add_(grad_var)
+            grad_var._clear()
+
         tmp_var.get_tensor()._set_dims(param.shape)
-
         if self.use_main_grad:
-            param.main_grad._clear()
             if not self._free_grads_in_comm:
                 param.main_grad = tmp_var
                 param.main_grad.name = "main_grad@" + param.name
         else:
-            param.grad._clear()
             if not self._free_grads_in_comm:
                 param._copy_gradient_from(tmp_var)
 
@@ -807,6 +838,7 @@ class FusedCommBuffer:
     def scale_grads(self):
         if self.need_reduce_scale_sync():
             if self._comm_group.nranks == 1 and self._task is None:
+                self._reset_params_checked_in()
                 return
             assert self._task is not None, "Task is not initialized."
             self._task.wait()
@@ -1032,9 +1064,9 @@ def fused_parameters(
 
     if comm_overlap:
         if comm_group is None:
-            assert (
-                act == HOOK_ACTION.ALL_REDUCE
-            ), "Only allreduce action can use default comm group"
+            assert act == HOOK_ACTION.ALL_REDUCE, (
+                "Only allreduce action can use default comm group"
+            )
             comm_group = paddle.distributed.collective._get_default_group()
     if act == HOOK_ACTION.REDUCE:
         assert dst != -1
@@ -1045,12 +1077,12 @@ def fused_parameters(
         updated_parameters = []
         comm_buffers = []
         for idx, group_param in enumerate(parameters):
-            assert isinstance(
-                group_param, dict
-            ), "For group params, each group should be a dictionary."
-            assert (
-                'params' in group_param.keys()
-            ), "For group params, each group should have parameters."
+            assert isinstance(group_param, dict), (
+                "For group params, each group should be a dictionary."
+            )
+            assert 'params' in group_param.keys(), (
+                "For group params, each group should have parameters."
+            )
             real_param = group_param['params']
             (
                 group_decay_fused,

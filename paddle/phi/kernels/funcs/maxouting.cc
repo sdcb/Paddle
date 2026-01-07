@@ -20,9 +20,9 @@ namespace phi::funcs {
 
 // All tensors are in NCHW or NHWC format, and the groups must be greater than 1
 template <typename DeviceContext, typename T>
-void MaxOutFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
-                                                 const phi::DenseTensor& input,
-                                                 phi::DenseTensor* output,
+void MaxOutFunctor<DeviceContext, T>::operator()(const DeviceContext& dev_ctx,
+                                                 const DenseTensor& input,
+                                                 DenseTensor* output,
                                                  const int groups,
                                                  const int axis) {
   const int batch_size = static_cast<int>(input.dims()[0]);
@@ -35,7 +35,7 @@ void MaxOutFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
   // c_size means the output size of each sample
   int c_size = fea_size * output_channels;
   const T* input_data = input.data<T>();
-  T* output_data = context.template Alloc<T>(output);
+  T* output_data = dev_ctx.template Alloc<T>(output);
   for (int i = 0; i < batch_size; ++i) {
     int new_bindex = c_size * i;
     for (int c = 0; c < output_channels; ++c) {
@@ -65,11 +65,11 @@ void MaxOutFunctor<DeviceContext, T>::operator()(const DeviceContext& context,
 
 template <typename DeviceContext, typename T>
 void MaxOutGradFunctor<DeviceContext, T>::operator()(
-    const DeviceContext& context,
-    const phi::DenseTensor& input,
-    phi::DenseTensor* input_grad,
-    const phi::DenseTensor& output,
-    const phi::DenseTensor& output_grad,
+    const DeviceContext& dev_ctx,
+    const DenseTensor& input,
+    DenseTensor* input_grad,
+    const DenseTensor& output,
+    const DenseTensor& output_grad,
     const int groups,
     const int axis) {
   const int batch_size = static_cast<int>(input.dims()[0]);
@@ -82,7 +82,7 @@ void MaxOutGradFunctor<DeviceContext, T>::operator()(
   const T* input_data = input.data<T>();
   const T* output_data = output.data<T>();
   const T* output_grad_data = output_grad.data<T>();
-  T* input_grad_data = context.template Alloc<T>(input_grad);
+  T* input_grad_data = dev_ctx.template Alloc<T>(input_grad);
   for (int i = 0; i < batch_size; ++i) {
     int blen = fea_size * output_channels * i;
     for (int c = 0; c < output_channels; ++c) {

@@ -66,7 +66,7 @@ static double fft_normalization_scale(FFTNormMode normalization,
 }
 
 template <typename T>
-void exec_normalization(const phi::XPUContext& ctx,
+void exec_normalization(const phi::XPUContext& dev_ctx,
                         const DenseTensor& in,
                         DenseTensor* out,
                         FFTNormMode normalization,
@@ -75,25 +75,25 @@ void exec_normalization(const phi::XPUContext& ctx,
   const double scale = fft_normalization_scale(normalization, sizes, axes);
   if (scale != 1.0) {
     DenseTensor scale_tensor =
-        phi::Full<T, phi::XPUContext>(ctx, {1}, static_cast<T>(scale));
-    MultiplyKernel<T, phi::XPUContext>(ctx, in, scale_tensor, out);
+        phi::Full<T, phi::XPUContext>(dev_ctx, {1}, static_cast<T>(scale));
+    MultiplyKernel<T, phi::XPUContext>(dev_ctx, in, scale_tensor, out);
   } else {
-    AssignKernel<phi::XPUContext>(ctx, in, out);
+    AssignKernel<phi::XPUContext>(dev_ctx, in, out);
   }
 }
 
 // up to 3d unnormalized fft transform (c2r, r2c, c2c)
 template <typename Ti, typename To>
-void exec_fft(const phi::XPUContext& ctx,
+void exec_fft(const phi::XPUContext& dev_ctx,
               const DenseTensor& x,
               DenseTensor* out,
               const std::vector<int64_t>& axes,
               bool forward) {
-  const phi::DDim& in_sizes = x.dims();
+  const DDim& in_sizes = x.dims();
   const int ndim = in_sizes.size();
   const int signal_ndim = axes.size();
   const int batch_ndim = ndim - signal_ndim;
-  const phi::DDim& out_sizes = out->dims();
+  const DDim& out_sizes = out->dims();
 
   // make a dim permutation
   std::vector<int> dim_permute(ndim);
@@ -110,8 +110,8 @@ void exec_fft(const phi::XPUContext& ctx,
 
   // transpose input according to the permutation
   DenseTensor transposed_input =
-      Transpose<Ti, phi::XPUContext>(ctx, x, dim_permute);
-  const phi::DDim transposed_input_shape = transposed_input.dims();
+      Transpose<Ti, phi::XPUContext>(dev_ctx, x, dim_permute);
+  const DDim transposed_input_shape = transposed_input.dims();
 
   // batch size
   int64_t batch_size = 1L;
@@ -126,24 +126,24 @@ void exec_fft(const phi::XPUContext& ctx,
   for (int i = 0; i < signal_ndim; i++) {
     collapsed_input_shape_.push_back(in_sizes[axes[i]]);
   }
-  phi::DDim collapsed_input_shape = common::make_ddim(collapsed_input_shape_);
+  DDim collapsed_input_shape = common::make_ddim(collapsed_input_shape_);
   transposed_input.Resize(collapsed_input_shape);
   DenseTensor& collapsed_input = transposed_input;
 
   // make a collapsed output
-  phi::DDim transposed_output_shape = out_sizes.transpose(dim_permute);
+  DDim transposed_output_shape = out_sizes.transpose(dim_permute);
   std::vector<int64_t> collapsed_output_shape_;
   collapsed_output_shape_.reserve(1 + signal_ndim);
   collapsed_output_shape_.emplace_back(batch_size);
   for (int i = 0; i < signal_ndim; i++) {
     collapsed_output_shape_.push_back(out_sizes[axes[i]]);
   }
-  phi::DDim collapsed_output_shape = common::make_ddim(collapsed_output_shape_);
+  DDim collapsed_output_shape = common::make_ddim(collapsed_output_shape_);
   DenseTensor collapsed_output;
   collapsed_output.Resize(collapsed_output_shape);
-  ctx.Alloc<To>(&collapsed_output);
+  dev_ctx.Alloc<To>(&collapsed_output);
 
-  int64_t device_id = ctx.GetPlace().GetDeviceId();
+  int64_t device_id = dev_ctx.GetPlace().GetDeviceId();
   FFTConfigCache& plan_cache = get_fft_plan_cache(device_id);
   std::lock_guard<std::mutex> guard(plan_cache.mutex);
   FFTConfigKey key =
@@ -151,22 +151,24 @@ void exec_fft(const phi::XPUContext& ctx,
   FFTConfig* config = &(plan_cache.lookup(key));
 
   const int64_t workspace_size = static_cast<int64_t>(config->workspace_size());
-  DenseTensor workspace_tensor = Empty<uint8_t>(ctx, {workspace_size});
+  DenseTensor workspace_tensor = Empty<uint8_t>(dev_ctx, {workspace_size});
 
   // prepare cufft for execution
-  PADDLE_ENFORCE_FFT_SUCCESS(
-      phi::dynload::cufftSetStream(config->plan(), nullptr));
+  PADDLE_ENFORCE_FFT_SUCCESS(phi::dynload::cufftSetStream(
+      config->plan(),
+      reinterpret_cast<cudaStream_t>(dev_ctx.x_context()->xpu_stream)));
   PADDLE_ENFORCE_FFT_SUCCESS(
       phi::dynload::cufftSetWorkArea(config->plan(), workspace_tensor.data()));
 
   // execution of fft plan
   const FFTTransformType fft_type = config->transform_type();
   if (fft_type == FFTTransformType::C2R && forward) {
-    ConjKernel<Ti, phi::XPUContext>(ctx, collapsed_input, &collapsed_input);
+    ConjKernel<Ti, phi::XPUContext>(dev_ctx, collapsed_input, &collapsed_input);
     exec_plan(*config, collapsed_input.data(), collapsed_output.data(), false);
   } else if (fft_type == FFTTransformType::R2C && !forward) {
     exec_plan(*config, collapsed_input.data(), collapsed_output.data(), true);
-    ConjKernel<To, phi::XPUContext>(ctx, collapsed_output, &collapsed_output);
+    ConjKernel<To, phi::XPUContext>(
+        dev_ctx, collapsed_output, &collapsed_output);
   } else {
     exec_plan(
         *config, collapsed_input.data(), collapsed_output.data(), forward);
@@ -174,7 +176,7 @@ void exec_fft(const phi::XPUContext& ctx,
 
   // resize for the collapsed output
   collapsed_output.Resize(transposed_output_shape);
-  phi::DenseTensor& transposed_output = collapsed_output;
+  DenseTensor& transposed_output = collapsed_output;
 
   // reverse the transposition
   std::vector<int> reverse_dim_permute(ndim);
@@ -182,20 +184,20 @@ void exec_fft(const phi::XPUContext& ctx,
     reverse_dim_permute[dim_permute[i]] = i;
   }
   TransposeKernel<To, phi::XPUContext>(
-      ctx, transposed_output, reverse_dim_permute, out);
+      dev_ctx, transposed_output, reverse_dim_permute, out);
 }
 }  // namespace detail
 
 template <typename Ti, typename To>
 struct FFTC2CFunctor<phi::XPUContext, Ti, To> {
-  void operator()(const phi::XPUContext& ctx,
+  void operator()(const phi::XPUContext& dev_ctx,
                   const DenseTensor& x,
                   DenseTensor* out,
                   const std::vector<int64_t>& axes,
                   FFTNormMode normalization,
                   bool forward) {
     if (axes.empty()) {
-      AssignKernel<phi::XPUContext>(ctx, x, out);
+      AssignKernel<phi::XPUContext>(dev_ctx, x, out);
       return;
     }
 
@@ -210,7 +212,8 @@ struct FFTC2CFunctor<phi::XPUContext, Ti, To> {
                           working_axes.size());
       first_dims.assign(working_axes.end() - max_dims, working_axes.end());
 
-      detail::exec_fft<Ti, To>(ctx, working_tensor, out, first_dims, forward);
+      detail::exec_fft<Ti, To>(
+          dev_ctx, working_tensor, out, first_dims, forward);
       working_axes.resize(working_axes.size() - max_dims);
       first_dims.clear();
 
@@ -220,7 +223,7 @@ struct FFTC2CFunctor<phi::XPUContext, Ti, To> {
 
       if (working_tensor.IsSharedWith(x)) {
         working_tensor = std::move(*out);
-        *out = EmptyLike<Ti>(ctx, x);
+        *out = EmptyLike<Ti>(dev_ctx, x);
       } else {
         std::swap(*out, working_tensor);
       }
@@ -228,13 +231,13 @@ struct FFTC2CFunctor<phi::XPUContext, Ti, To> {
 
     std::vector<int64_t> out_dims = common::vectorize(x.dims());
     detail::exec_normalization<To>(
-        ctx, *out, out, normalization, out_dims, axes);
+        dev_ctx, *out, out, normalization, out_dims, axes);
   }
 };
 
 template <typename Ti, typename To>
 struct FFTC2RFunctor<phi::XPUContext, Ti, To> {
-  void operator()(const phi::XPUContext& ctx,
+  void operator()(const phi::XPUContext& dev_ctx,
                   const DenseTensor& x,
                   DenseTensor* out,
                   const std::vector<int64_t>& axes,
@@ -243,40 +246,41 @@ struct FFTC2RFunctor<phi::XPUContext, Ti, To> {
     std::vector<int64_t> out_dims = common::vectorize(out->dims());
 
     if (detail::use_optimized_fft_path(axes)) {
-      DenseTensor x_copy = Assign(ctx, x);
-      detail::exec_fft<Ti, To>(ctx, x_copy, out, axes, forward);
+      DenseTensor x_copy = Assign(dev_ctx, x);
+      detail::exec_fft<Ti, To>(dev_ctx, x_copy, out, axes, forward);
     } else {
-      DenseTensor c2c_result = EmptyLike<Ti, phi::XPUContext>(ctx, x);
+      DenseTensor c2c_result = EmptyLike<Ti, phi::XPUContext>(dev_ctx, x);
       FFTC2CFunctor<phi::XPUContext, Ti, Ti> c2c_functor;
-      c2c_functor(ctx,
+      c2c_functor(dev_ctx,
                   x,
                   &c2c_result,
                   {axes.begin(), axes.end() - 1},
                   FFTNormMode::none,
                   forward);
-      detail::exec_fft<Ti, To>(ctx, c2c_result, out, {axes.back()}, forward);
+      detail::exec_fft<Ti, To>(
+          dev_ctx, c2c_result, out, {axes.back()}, forward);
     }
     detail::exec_normalization<To>(
-        ctx, *out, out, normalization, out_dims, axes);
+        dev_ctx, *out, out, normalization, out_dims, axes);
   }
 };
 
 template <typename Ti, typename To>
 struct FFTR2CFunctor<phi::XPUContext, Ti, To> {
-  void operator()(const phi::XPUContext& ctx,
+  void operator()(const phi::XPUContext& dev_ctx,
                   const DenseTensor& x,
                   DenseTensor* out,
                   const std::vector<int64_t>& axes,
                   FFTNormMode normalization,
                   bool forward) {
     if (detail::use_optimized_fft_path(axes)) {
-      detail::exec_fft<Ti, To>(ctx, x, out, axes, forward);
+      detail::exec_fft<Ti, To>(dev_ctx, x, out, axes, forward);
     } else {
-      DenseTensor r2c_result = EmptyLike<To, phi::XPUContext>(ctx, *out);
-      detail::exec_fft<Ti, To>(ctx, x, &r2c_result, {axes.back()}, forward);
+      DenseTensor r2c_result = EmptyLike<To, phi::XPUContext>(dev_ctx, *out);
+      detail::exec_fft<Ti, To>(dev_ctx, x, &r2c_result, {axes.back()}, forward);
 
       FFTC2CFunctor<phi::XPUContext, To, To> fft_c2c_func;
-      fft_c2c_func(ctx,
+      fft_c2c_func(dev_ctx,
                    r2c_result,
                    out,
                    {axes.begin(), axes.end() - 1},
@@ -286,14 +290,13 @@ struct FFTR2CFunctor<phi::XPUContext, Ti, To> {
 
     const auto in_dims = common::vectorize(x.dims());
     detail::exec_normalization<To>(
-        ctx, *out, out, normalization, in_dims, axes);
+        dev_ctx, *out, out, normalization, in_dims, axes);
   }
 };
 
-using complex64_t = phi::dtype::complex<float>;
-template struct FFTC2CFunctor<phi::XPUContext, complex64_t, complex64_t>;
-template struct FFTC2RFunctor<phi::XPUContext, complex64_t, float>;
-template struct FFTR2CFunctor<phi::XPUContext, float, complex64_t>;
+template struct FFTC2CFunctor<phi::XPUContext, phi::complex64, phi::complex64>;
+template struct FFTC2RFunctor<phi::XPUContext, phi::complex64, float>;
+template struct FFTR2CFunctor<phi::XPUContext, float, phi::complex64>;
 }  // namespace funcs
 }  // namespace phi
 #endif

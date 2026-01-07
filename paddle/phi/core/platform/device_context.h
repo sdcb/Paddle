@@ -61,13 +61,7 @@ limitations under the License. */
 
 #include <map>
 
-#include "glog/logging.h"
-
 #include "paddle/phi/backends/stream.h"
-
-#if !defined(PADDLE_WITH_XPU_KP) || defined(__xpu_on_host__)
-#include "unsupported/Eigen/CXX11/Tensor"
-#endif
 
 namespace Eigen {
 struct DefaultDevice;
@@ -117,12 +111,13 @@ using CUDAPinnedDeviceContext = phi::GPUPinnedContext;
 using XPUPinnedDeviceContext = phi::XPUPinnedContext;
 #endif
 
-void EmplaceDeviceContexts(
+PADDLE_API void EmplaceDeviceContexts(
     std::map<Place, std::shared_future<std::unique_ptr<DeviceContext>>>*
         place_to_device_context,
     const std::vector<phi::Place>& places,
     bool disable_setting_default_stream_for_allocator,
-    int stream_priority);
+    int stream_priority,
+    bool set_to_default_stream = false);
 
 using DeviceContextPool = phi::DeviceContextPool;
 

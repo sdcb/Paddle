@@ -18,7 +18,6 @@
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/adam_functors.h"
@@ -63,12 +62,14 @@ __global__ void SparseAdamCUDAKernelREG(MT beta1,
                                         bool lazy_mode,
                                         int ndim,
                                         bool amsgrad) {
-  int id = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t id =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
   MT lr = *lr_;
 
   for (; id < ndim; id += blockDim.x * gridDim.x) {
     auto row_idx =
-        phi::funcs::BinarySearch<int64_t>(rows_, row_count, id / row_numel);
+        funcs::BinarySearch<int64_t>(rows_, row_count, id / row_numel);
     if (lazy_mode && row_idx < 0) {
       return;
     } else {
@@ -216,14 +217,14 @@ void AdamDenseParamSparseGradKernel(
     }
   }
 
-  phi::SelectedRows tmp_grad_merge;
-  const phi::SelectedRows* grad_merge_ptr;
+  SelectedRows tmp_grad_merge;
+  const SelectedRows* grad_merge_ptr;
   if (is_strict_sorted) {
     grad_merge_ptr = &grad;
   } else {
     // merge duplicated rows if any.
     // The rows of grad_merge have been sorted inside MergeAdd functor
-    phi::funcs::scatter::MergeAdd<Context, T> merge_func;
+    funcs::scatter::MergeAdd<Context, T> merge_func;
     merge_func(dev_ctx, grad, &tmp_grad_merge, true);
     grad_merge_ptr = &tmp_grad_merge;
   }
@@ -237,11 +238,13 @@ void AdamDenseParamSparseGradKernel(
 
   if (beta1_pow.place() == CPUPlace() && beta2_pow.place() == CPUPlace()) {
     int threads = 512;
-    int ndim = param.numel();
-    int blocks = (ndim + threads - 1) / threads;
+    int64_t ndim = param.numel();
+    int64_t blocks = (ndim + threads - 1) / threads;
 
+    // NOTE(large-tensor): Kernel launch requires int type for grid dimension
+    PADDLE_ENFORCE_LE_INT_MAX(blocks, "blocks");
     SparseAdamCUDAKernelREG<T, MPDType>
-        <<<blocks, threads, 0, dev_ctx.stream()>>>(
+        <<<static_cast<int>(blocks), threads, 0, dev_ctx.stream()>>>(
             beta1_,
             beta2_,
             epsilon_,
@@ -322,7 +325,7 @@ PD_REGISTER_KERNEL(adam_dense_param_sparse_grad,
                    phi::sr::AdamDenseParamSparseGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   // Skip beta1_pow, beta2_pow, skip_update data transform
   kernel->InputAt(6).SetBackend(phi::Backend::ALL_BACKEND);
   kernel->InputAt(7).SetBackend(phi::Backend::ALL_BACKEND);

@@ -41,9 +41,9 @@ g_shard_param_with_color = int(
 )
 
 vocab_size = 20
-hidden_size = 10
+hidden_size = 256
 inner_size = 8
-output_size = 10
+output_size = 256
 seq_length = 2
 batch_size = 4
 STEPS = 10
@@ -222,9 +222,9 @@ class TestDistMPTraining(unittest.TestCase):
             "mp_degree": 1,
             "pp_degree": 1,
         }
-        self.strategy.hybrid_configs["sharding_configs"].split_param = (
-            g_shard_split_param
-        )
+        self.strategy.hybrid_configs[
+            "sharding_configs"
+        ].split_param = g_shard_split_param
 
         fleet.init(is_collective=True, strategy=self.strategy)
         self.data = [

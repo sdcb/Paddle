@@ -86,12 +86,10 @@
 #include "paddle/fluid/pybind/gloo_context_py.h"
 #include "paddle/fluid/pybind/gloo_wrapper_py.h"
 #include "paddle/fluid/pybind/graph.h"
-#include "paddle/fluid/pybind/heter_wrapper_py.h"
 #include "paddle/fluid/pybind/imperative.h"
 #include "paddle/fluid/pybind/inference_api.h"
 #include "paddle/fluid/pybind/io.h"
 #include "paddle/fluid/pybind/metrics_py.h"
-#include "paddle/fluid/pybind/ps_gpu_wrapper_py.h"
 #include "paddle/fluid/pybind/pybind_variant_caster.h"
 #include "paddle/phi/backends/cpu/cpu_info.h"
 #include "paddle/phi/backends/device_manager.h"
@@ -147,10 +145,6 @@
 #include "paddle/fluid/pybind/crypto.h"
 #endif
 
-#if defined PADDLE_WITH_PSCORE
-#include "paddle/fluid/pybind/fleet_py.h"
-#endif
-
 #include "paddle/common/flags.h"
 #include "paddle/fluid/eager/api/utils/global_utils.h"
 #include "paddle/fluid/imperative/layout_autotune.h"
@@ -162,6 +156,7 @@
 #include "pybind11/stl.h"
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 
 // disable auto conversion to list in Python
 PYBIND11_MAKE_OPAQUE(phi::TensorArray);
@@ -387,7 +382,7 @@ void BindCompiledProgram(pybind11::module &m) {  // NOLINT
             self.fuse_gemm_epilogue_ = b;
           },
           R"DOC((bool, optional): fuse_gemm_epilogue indicate whether
-                to fuse matmul_op, elemenewist_add_op and activation_op,
+                to fuse matmul_op, elementwise_add_op and activation_op,
                 it may make the execution faster. Default is False.
 
                 Examples:
@@ -410,7 +405,7 @@ void BindCompiledProgram(pybind11::module &m) {  // NOLINT
             PADDLE_ENFORCE_NE(self.IsFinalized(),
                               true,
                               common::errors::PreconditionNotMet(
-                                  "BuildStrategy has been finlaized, cannot be "
+                                  "BuildStrategy has been finalized, cannot be "
                                   "configured again."));
             self.fuse_dot_product_attention_ = b;
           },
@@ -817,11 +812,20 @@ void BindCompiledProgram(pybind11::module &m) {  // NOLINT
       .def_property(
           "mkldnn_enabled_op_types",
           [](const BuildStrategy &self) {
-            return self.mkldnn_enabled_op_types_;
+            return self.onednn_enabled_op_types_;
           },
           [](BuildStrategy &self,
-             const std::unordered_set<std::string> &mkldnn_enabled_op_types) {
-            self.mkldnn_enabled_op_types_ = mkldnn_enabled_op_types;
+             const std::unordered_set<std::string> &onednn_enabled_op_types) {
+            self.onednn_enabled_op_types_ = onednn_enabled_op_types;
+          })
+      .def_property(
+          "onednn_enabled_op_types",
+          [](const BuildStrategy &self) {
+            return self.onednn_enabled_op_types_;
+          },
+          [](BuildStrategy &self,
+             const std::unordered_set<std::string> &onednn_enabled_op_types) {
+            self.onednn_enabled_op_types_ = onednn_enabled_op_types;
           })
       .def_property(
           "allow_cuda_graph_capture",

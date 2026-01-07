@@ -12,6 +12,9 @@ limitations under the License. */
 
 #include <Python.h>
 
+#ifdef PADDLE_WITH_CUDA
+#include "paddle/fluid/eager/activation_offloader.h"
+#endif
 #include "paddle/fluid/eager/hooks.h"
 #include "paddle/fluid/eager/pylayer/py_layer_node.h"
 #include "paddle/phi/core/dense_tensor.h"
@@ -29,9 +32,13 @@ typedef struct {
   PyObject* non_differentiable;
   PyObject* not_inplace_tensors;
   bool materialize_grads;
+  bool grad_in_dtype_consistent;
   std::vector<bool> forward_input_tensor_is_duplicable;
   std::vector<bool> forward_output_tensor_is_duplicable;
   std::weak_ptr<egr::GradNodePyLayer> grad_node;
+#ifdef PADDLE_WITH_CUDA
+  std::vector<egr::ReloadFunctor> reload_functors;
+#endif
 } PyLayerObject;
 
 void BindEager(pybind11::module* m);

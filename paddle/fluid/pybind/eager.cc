@@ -121,13 +121,12 @@ void EmptyTensorInitializer(TensorObject* self,
       self->tensor.set_impl(tensor);
     }
   }
-
   if (!autograd_meta->GetMutableGradNode()) {
     autograd_meta->SetGradNode(
-        std::make_shared<egr::GradNodeAccumulation>(autograd_meta));
+        std::make_shared<egr::GradNodeAccumulation>(self->tensor));
     VLOG(3) << "Tensor(" << name
-            << ") have not GradNode, add GradNodeAccumulation"
-            << autograd_meta->GradNode() << " for it.";
+            << ") have not GradNode, add GradNodeAccumulation("
+            << autograd_meta->GradNode() << ") for it.";
   }
 }
 
@@ -138,7 +137,7 @@ void EmptyStringTensorInitializer(TensorObject* self,
   auto ddims = common::make_ddim(dims);
   self->tensor.set_name(name);
   // Note(zhoushunjie): Only support CPUPlace when create StringTensor
-  auto actual_place = phi::CPUPlace();
+  auto actual_place = CPUPlace();
   // Allocate memory
   paddle::experimental::DefaultAllocator string_allocator(actual_place);
   std::shared_ptr<phi::StringTensor> string_tensor =
@@ -166,7 +165,7 @@ void InitTensorWithNumpyValue(TensorObject* self,
   phi::DenseTensor* impl_ptr =
       static_cast<phi::DenseTensor*>(self->tensor.impl().get());
   if (phi::is_cpu_place(place)) {
-    SetTensorFromPyArray<phi::CPUPlace>(impl_ptr, array, place, zero_copy);
+    SetTensorFromPyArray<CPUPlace>(impl_ptr, array, place, zero_copy);
   } else if (phi::is_xpu_place(place)) {
 #if defined(PADDLE_WITH_XPU)
     phi::backends::xpu::SetXPUDeviceId(place.device);
@@ -187,7 +186,7 @@ void InitTensorWithNumpyValue(TensorObject* self,
     PADDLE_THROW(common::errors::PreconditionNotMet(
         "PaddlePaddle should compile with GPU if use CUDAPlace."));
 #endif
-    SetTensorFromPyArray<phi::GPUPlace>(impl_ptr, array, place, zero_copy);
+    SetTensorFromPyArray<GPUPlace>(impl_ptr, array, place, zero_copy);
   } else if (phi::is_cuda_pinned_place(place)) {
     SetTensorFromPyArray<phi::GPUPinnedPlace>(
         impl_ptr, array, place, zero_copy);
@@ -228,7 +227,7 @@ void InitStringTensorWithNumpyValue(TensorObject* self, const py::object& obj) {
   phi::Place place = impl_ptr->place();
   auto array = obj.cast<py::array>();
   if (phi::is_cpu_place(place)) {
-    SetStringTensorFromPyArray<phi::CPUPlace>(impl_ptr, array, place);
+    SetStringTensorFromPyArray<CPUPlace>(impl_ptr, array, place);
   } else {
     PADDLE_THROW(common::errors::InvalidArgument(
         "StringTensor only support CPUPlace now, but receive %s",
@@ -830,7 +829,7 @@ int TensorInit(PyObject* self, PyObject* args, PyObject* kwargs) {
   SetPythonStack();
   // set a flag to record use kwargs or not
   bool flag_kwargs = false;
-  if (kwargs) flag_kwargs = true;
+  if (kwargs && PyList_Size(PyDict_Keys(kwargs))) flag_kwargs = true;
 
   // all kwargs
   PyObject* kw_zero_copy = nullptr;
@@ -901,7 +900,7 @@ int TensorInit(PyObject* self, PyObject* args, PyObject* kwargs) {
       true,
       common::errors::PreconditionNotMet(
           "Could not parse args and kwargs successfully, "
-          "please check your input first and make"
+          "please check your input first and make "
           "sure you are on the right way. "
           "The expected arguments as follow: ("
           "value, place, persistable, zero_copy, "
@@ -1307,7 +1306,7 @@ int StringTensorInit(PyObject* self, PyObject* args, PyObject* kwargs) {
                     true,
                     common::errors::PreconditionNotMet(
                         "Could not parse args and kwargs successfully, "
-                        "please check your input first and make"
+                        "please check your input first and make "
                         "sure you are on the right way. "
                         "The expected arguments as follow: ("
                         "value, zero_copy, name, dims)"));
@@ -1505,9 +1504,7 @@ void BindEager(pybind11::module* module) {
   type->tp_flags |=
       Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE;  // NOLINT
   type->tp_dictoffset = offsetof(TensorObject, dict);
-#if PY_VERSION_HEX >= 0x03050000
   type->tp_as_async = &heap_type->as_async;
-#endif
   p_tensor_type = type;
 
   if (PyType_Ready(type) < 0) {
@@ -1554,9 +1551,7 @@ void BindEagerStringTensor(pybind11::module* module) {
   type->tp_flags |=
       Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE;  // NOLINT
   type->tp_dictoffset = offsetof(TensorObject, dict);
-#if PY_VERSION_HEX >= 0x03050000
   type->tp_as_async = &heap_type->as_async;
-#endif
   p_string_tensor_type = type;
 
   if (PyType_Ready(type) < 0) {

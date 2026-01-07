@@ -65,6 +65,7 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/framework/new_executor/instruction/legacy_kernel_instruction.h"
 #include "paddle/fluid/framework/new_executor/instruction/phi_kernel_instruction.h"
+#include "paddle/fluid/framework/new_executor/instruction/python_function_instruction.h"
 #include "paddle/fluid/framework/new_executor/instruction/tensorrt_engine_instruction.h"
 #include "paddle/fluid/framework/new_executor/pir_adaptor/pir_adaptor_util.h"
 #include "paddle/fluid/pir/dialect/kernel/ir/kernel_attribute.h"
@@ -315,9 +316,9 @@ PirInterpreter::~PirInterpreter() {
   VLOG(4) << "~PirInterpreter(): " << this << " on " << place_;
 
 #ifdef PADDLE_WITH_DNNL
-  // Clear mkl-dnn cache,
-  // this is needed to have mkl-dnn unit tests working
-  platform::ClearMKLDNNCache(place_, this);
+  // Clear one-dnn cache,
+  // this is needed to have one-dnn unit tests working
+  platform::ClearONEDNNCache(place_, this);
 #endif
 }
 
@@ -958,6 +959,10 @@ void PirInterpreter::BuildInstruction() {
       vec_instruction_base_.emplace_back(
           std::make_unique<CustomKernelInstruction>(
               op_idx++, place_, &op, *(value_exe_info_.get())));
+    } else if (op.dialect()->name() == "py_func") {
+      vec_instruction_base_.emplace_back(
+          std::make_unique<PythonFunctionInstruction>(
+              op_idx++, place_, &op, *(value_exe_info_.get())));
     } else if (paddle::dialect::IsCustomEngineOp(&op)) {
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
       vec_instruction_base_.emplace_back(
@@ -1514,7 +1519,7 @@ paddle::framework::FetchList PirInterpreter::Run(
   SetDeviceId(place_);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
   platform::RegisterModelLayout(ir_block_, place_);
 #endif
 
@@ -1593,7 +1598,7 @@ FetchList PirInterpreter::Run(const std::vector<std::string>& feed_names,
   SetDeviceId(place_);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
   platform::RegisterModelLayout(ir_block_, place_);
 #endif
 

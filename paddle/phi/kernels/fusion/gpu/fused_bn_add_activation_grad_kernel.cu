@@ -72,8 +72,8 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
   const auto &in_dims = x_ptr->dims();
 
   int N, C, H, W, D;
-  const DataLayout data_layout = DataLayout::kNHWC;
-  phi::funcs::ExtractNCWHD(in_dims, data_layout, &N, &C, &H, &W, &D);
+  const DataLayout data_layout = DataLayout::NHWC;
+  funcs::ExtractNCWHD(in_dims, data_layout, &N, &C, &H, &W, &D);
 
   // init output
   auto *d_x = x_grad;
@@ -139,7 +139,7 @@ void FusedBatchNormAddActGradKernel(const Context &dev_ctx,
 
   size_t workspace_size = 0;
   void *workspace_ptr = nullptr;
-  phi::DenseTensor workspace_tensor;
+  DenseTensor workspace_tensor;
   auto reserve_space_size = reserve_space_ptr->memory_size();
   cudnnBatchNormOps_t bnOps_ = CUDNN_BATCHNORM_OPS_BN_ADD_ACTIVATION;
   phi::backends::gpu::ScopedActivationDescriptor scope_act_desc;
@@ -214,7 +214,7 @@ PD_REGISTER_KERNEL(fused_bn_add_activation_grad,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::FusedBatchNormAddActGradKernel,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
   kernel->OutputAt(3).SetDataType(phi::DataType::FLOAT32);
 }

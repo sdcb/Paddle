@@ -34,8 +34,9 @@ def _get_cpu_info(numa_id):
         processed_cpu_info = []
         cpu_ranges = i.split(',')
         for cpu_range in cpu_ranges:
-            start, end = int(cpu_range.split("-")[0]), int(
-                cpu_range.split("-")[1]
+            start, end = (
+                int(cpu_range.split("-")[0]),
+                int(cpu_range.split("-")[1]),
             )
             processed_cpu_info.extend(list(range(start, end + 1)))
         return processed_cpu_info
@@ -134,7 +135,7 @@ def _get_xpu_affinity_mask(xpu_id):
         # NOTE(lijin23): if CUDA_DEVICE_ORDER is set to OAM_ID,
         #  we need to get the cpu affinity using OAM_ID
         cmd = ["xpu-smi", "topo", "-mo"]
-    output = subprocess.check_output(cmd, timeout=30).decode("utf-8")
+    output = subprocess.check_output(cmd, timeout=60).decode("utf-8")
     cpu_affinity = output.splitlines()[xpu_id + 1].split()[-2]
     affinity_mask = []
     for affinity_range in cpu_affinity.split(','):

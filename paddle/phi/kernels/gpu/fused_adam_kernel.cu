@@ -17,7 +17,6 @@
 #include "glog/logging.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/scalar.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
@@ -288,7 +287,7 @@ static void CopyTensorIfDifferent(const Context& dev_ctx,
     if (src[i] != dst[i]) {
       VLOG(10) << "Copy Tensor " << i;
       phi::Place place = (use_src_place ? src[i]->place() : dev_ctx.GetPlace());
-      phi::Copy<Context>(dev_ctx, *(src[i]), place, false, dst[i]);
+      Copy<Context>(dev_ctx, *(src[i]), place, false, dst[i]);
     }
   }
 }
@@ -303,7 +302,7 @@ static int GetVecSizeFromTensors(const std::vector<TensorT*>& tensors,
 }
 
 template <typename T, typename Context>
-void FusedAdamKernel(
+PADDLE_API void FusedAdamKernel(
     const Context& dev_ctx,
     const std::vector<const DenseTensor*>& params,
     const std::vector<const DenseTensor*>& grads,
@@ -378,8 +377,7 @@ void FusedAdamKernel(
         errors::InvalidArgument("Input(SkipUpdate) size must be 1, but get %d",
                                 skip_update->numel()));
     DenseTensor skip_update_tensor;
-    phi::Copy(
-        dev_ctx, skip_update.get(), CPUPlace(), false, &skip_update_tensor);
+    Copy(dev_ctx, skip_update.get(), CPUPlace(), false, &skip_update_tensor);
     skip_update_value = skip_update_tensor.data<bool>()[0];
     VLOG(4) << "skip_update_value:" << skip_update_value;
   }
@@ -587,8 +585,8 @@ PD_REGISTER_KERNEL(fused_adam,
                    GPU,
                    ALL_LAYOUT,
                    phi::FusedAdamKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
                    double) {
   // Skip beta1_pow, beta2_pow, skip_update data transform

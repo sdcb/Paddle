@@ -33,7 +33,7 @@
 namespace phi {
 namespace funcs {
 
-inline int64_t GetBatchSize(const phi::DDim &dims) {
+inline int64_t GetBatchSize(const DDim &dims) {
   int64_t batch_size = 1;
   auto dim_size = dims.size();
   for (int i = 0; i < dim_size - 2; ++i) {
@@ -47,7 +47,7 @@ static void CheckEighResult(const int batch, const int info) {
       info,
       0,
       common::errors::PreconditionNotMet(
-          "For batch [%d]: the [%d] off-diagonal elements of an intermediate"
+          "For batch [%d]: the [%d] off-diagonal elements of an intermediate "
           "tridiagonal form did not converge to zero",
           batch,
           info));
@@ -96,9 +96,8 @@ inline void syevjBatched_bufferSize<double>(
 }
 
 template <>
-inline void syevjBatched_bufferSize<phi::dtype::complex<float>, float>(
-    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::dtype::complex<float>,
-                                                 float)) {
+inline void syevjBatched_bufferSize<phi::complex64, float>(
+    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::complex64, float)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnCheevjBatched_bufferSize(
       handle,
       jobz,
@@ -113,9 +112,8 @@ inline void syevjBatched_bufferSize<phi::dtype::complex<float>, float>(
 }
 
 template <>
-inline void syevjBatched_bufferSize<phi::dtype::complex<double>, double>(
-    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::dtype::complex<double>,
-                                                 double)) {
+inline void syevjBatched_bufferSize<phi::complex128, double>(
+    CUDASOLVER_SYEVJ_BATCHED_BUFFERSIZE_ARGTYPES(phi::complex128, double)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnZheevjBatched_bufferSize(
       handle,
       jobz,
@@ -155,8 +153,8 @@ inline void syevjBatched<double>(CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(double,
 }
 
 template <>
-inline void syevjBatched<phi::dtype::complex<float>, float>(
-    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::dtype::complex<float>, float)) {
+inline void syevjBatched<phi::complex64, float>(
+    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::complex64, float)) {
   PADDLE_ENFORCE_GPU_SUCCESS(
       dynload::cusolverDnCheevjBatched(handle,
                                        jobz,
@@ -173,8 +171,8 @@ inline void syevjBatched<phi::dtype::complex<float>, float>(
 }
 
 template <>
-inline void syevjBatched<phi::dtype::complex<double>, double>(
-    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::dtype::complex<double>, double)) {
+inline void syevjBatched<phi::complex128, double>(
+    CUDASOLVER_SYEVJ_BATCHED_ARGTYPES(phi::complex128, double)) {
   PADDLE_ENFORCE_GPU_SUCCESS(dynload::cusolverDnZheevjBatched(
       handle,
       jobz,
@@ -237,7 +235,7 @@ struct MatrixEighFunctor<CPUContext, T> {
     DenseTensor input_trans;
     // lapack is a column-major storage, transpose make the input to
     // have a continuous memory layout
-    input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input);
+    input_trans = TransposeLast2Dim<T>(dev_ctx, input);
     T *input_vector = input_trans.data<T>();
 
     auto dims = input.dims();
@@ -263,19 +261,19 @@ struct MatrixEighFunctor<CPUContext, T> {
 
     int info = 0;
     // Call lapackEigh to get the optimal size of work data
-    phi::funcs::lapackEigh<T, ValueType>(jobz,
-                                         uplo,
-                                         n,
-                                         input_vector,
-                                         lda,
-                                         out_value,
-                                         &lwork_opt,
-                                         lwork,
-                                         &rwork_opt,
-                                         lrwork,
-                                         &iwork_opt,
-                                         liwork,
-                                         &info);
+    funcs::lapackEigh<T, ValueType>(jobz,
+                                    uplo,
+                                    n,
+                                    input_vector,
+                                    lda,
+                                    out_value,
+                                    &lwork_opt,
+                                    lwork,
+                                    &rwork_opt,
+                                    lrwork,
+                                    &iwork_opt,
+                                    liwork,
+                                    &info);
     lwork = std::max<int>(1, static_cast<int>(lwork_opt));
     liwork = std::max<int>(1, iwork_opt);
 
@@ -302,19 +300,19 @@ struct MatrixEighFunctor<CPUContext, T> {
     for (auto i = 0; i < batch_size; i++) {
       auto *value_data = out_value + i * values_stride;
       auto *input_data = input_vector + i * vector_stride;
-      phi::funcs::lapackEigh<T, ValueType>(jobz,
-                                           uplo,
-                                           n,
-                                           input_data,
-                                           lda,
-                                           value_data,
-                                           work_data,
-                                           lwork,
-                                           rwork_data,
-                                           lrwork,
-                                           iwork_data,
-                                           liwork,
-                                           &info);
+      funcs::lapackEigh<T, ValueType>(jobz,
+                                      uplo,
+                                      n,
+                                      input_data,
+                                      lda,
+                                      value_data,
+                                      work_data,
+                                      lwork,
+                                      rwork_data,
+                                      lrwork,
+                                      iwork_data,
+                                      liwork,
+                                      &info);
       CheckEighResult(i, info);
     }
     if (has_vectors) {
@@ -323,7 +321,7 @@ struct MatrixEighFunctor<CPUContext, T> {
                                   "When has_vectors is true,"
                                   "the eigenvectors needs to be calculated, "
                                   "so the eigenvectors must be provided."));
-      input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input_trans);
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
       eigen_vectors->ShareDataWith(input_trans);
     }
   }
@@ -407,7 +405,7 @@ struct MatrixEighFunctor<GPUContext, T> {
         has_vectors ? rocblas_evect_original : rocblas_evect_none;
 
     ValueType *out_value = dev_ctx.template Alloc<ValueType>(eigen_values);
-    DenseTensor input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input);
+    DenseTensor input_trans = TransposeLast2Dim<T>(dev_ctx, input);
     T *input_vector = input_trans.data<T>();
 
     auto handle = dev_ctx.cusolver_dn_handle();
@@ -452,7 +450,7 @@ struct MatrixEighFunctor<GPUContext, T> {
                                   "When has_vectors is true,"
                                   "the eigenvectors needs to be calculated,"
                                   "so the eigenvectors must be provided."));
-      input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input_trans);
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
       eigen_vectors->ShareDataWith(input_trans);
     }
   }
@@ -490,7 +488,7 @@ struct MatrixEighFunctor<GPUContext, T> {
         has_vectors ? CUSOLVER_EIG_MODE_VECTOR : CUSOLVER_EIG_MODE_NOVECTOR;
 
     ValueType *out_value = dev_ctx.template Alloc<ValueType>(eigen_values);
-    DenseTensor input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input);
+    DenseTensor input_trans = TransposeLast2Dim<T>(dev_ctx, input);
     T *input_vector = input_trans.data<T>();
 
     // Precision loss will occur in some cases while using
@@ -603,7 +601,7 @@ struct MatrixEighFunctor<GPUContext, T> {
                                   "When has_vectors is true,"
                                   "the eigenvectors needs to be calculated,"
                                   "so the eigenvectors must be provided."));
-      input_trans = phi::TransposeLast2Dim<T>(dev_ctx, input_trans);
+      input_trans = TransposeLast2Dim<T>(dev_ctx, input_trans);
       eigen_vectors->ShareDataWith(input_trans);
     }
   }

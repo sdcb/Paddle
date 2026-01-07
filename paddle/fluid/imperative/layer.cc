@@ -23,14 +23,13 @@
 #include "paddle/fluid/imperative/prepared_operator.h"
 #include "paddle/fluid/imperative/var_helper.h"
 #include "paddle/fluid/platform/enforce.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/phi/core/platform/device_context.h"
 #include "paddle/phi/core/platform/profiler.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
 namespace paddle::imperative {
 
 using framework::Variable;
@@ -228,7 +227,8 @@ void VarBase::ClearGradient(bool set_to_zero) {
       auto* grad_t = grad_var_->MutableVar()->GetMutable<phi::SelectedRows>();
       if (grad_t->mutable_value()->IsInitialized()) {
 #ifdef PADDLE_WITH_DNNL
-        if (FLAGS_use_mkldnn) platform::ClearMKLDNNCache(grad_t->place());
+        if (FLAGS_use_mkldnn || FLAGS_use_onednn)
+          platform::ClearONEDNNCache(grad_t->place());
 #endif
         grad_t->mutable_rows()->clear();
         grad_t->mutable_value()->clear();
@@ -246,7 +246,8 @@ void VarBase::ClearGradient(bool set_to_zero) {
           grad_t->clear();
         }
 #ifdef PADDLE_WITH_DNNL
-        if (FLAGS_use_mkldnn) platform::ClearMKLDNNCache(grad_t->place());
+        if (FLAGS_use_mkldnn || FLAGS_use_onednn)
+          platform::ClearONEDNNCache(grad_t->place());
 #endif
       }
     }

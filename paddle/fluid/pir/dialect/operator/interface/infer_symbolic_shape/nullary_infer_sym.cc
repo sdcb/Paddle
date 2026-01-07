@@ -68,6 +68,57 @@ bool ArangeOpInferSymbolicShape(pir::Operation *op,
   return true;
 }
 
+bool RangeV2OpInferSymbolicShape(
+    pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
+  const auto &start_shape_or_data =
+      infer_context->GetShapeOrDataForValue(op->operand_source(0));
+  const auto &end_shape_or_data =
+      infer_context->GetShapeOrDataForValue(op->operand_source(1));
+  const auto &step_shape_or_data =
+      infer_context->GetShapeOrDataForValue(op->operand_source(2));
+
+  const auto result = op->result(0);
+  bool contain_unknown_dim = [&]() {
+    bool check = result && result.type() &&
+                 result.type().isa<paddle::dialect::DenseTensorType>();
+    PADDLE_ENFORCE_EQ(check,
+                      true,
+                      common::errors::PreconditionNotMet(
+                          "result for arange must be DenseTensorType"));
+    const auto dims =
+        result.type().dyn_cast<paddle::dialect::DenseTensorType>().dims();
+    return ::common::contain_unknown_dim(dims);
+  }();
+
+  if (!contain_unknown_dim) {
+    infer_context->SetSymbolForValueByStaticShape(result);
+    return true;
+  }
+
+  const symbol::ShapeOrDataDimExprs &shape_data = [&] {
+    if (!start_shape_or_data.data().has_value() ||
+        !end_shape_or_data.data().has_value() ||
+        !step_shape_or_data.data().has_value()) {
+      return symbol::ShapeOrDataDimExprs{
+          symbol::TensorShapeOrDataDimExprs(std::vector<symbol::DimExpr>{
+              symbol::DimExpr(infer_context->GetNextSymName())})};
+    }
+    const auto &start = start_shape_or_data.data()->at(0);
+    const auto &end = end_shape_or_data.data()->at(0);
+    const auto &step = step_shape_or_data.data()->at(0);
+    std::vector<symbol::DimExpr> out_dims;
+    // Use ceiling div to avoid incorrect shape calculation
+    // introduced by rounded division
+    out_dims.emplace_back((end - start) / step + 1);
+    return symbol::ShapeOrDataDimExprs{
+        symbol::TensorShapeOrDataDimExprs(out_dims)};
+  }();
+
+  infer_context->SetShapeOrDataForValue(op->result(0), shape_data);
+
+  return true;
+}
+
 bool AssignValueOpInferSymbolicShape(
     pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
   const std::vector<int> shape =
@@ -286,7 +337,11 @@ bool EyeOpInferSymbolicShape(pir::Operation *op,
   symbol::DimExpr num_columns_dim;
   symbol::DimExpr num_rows_dim;
   if (op->HasAttribute("num_rows")) {
-    int num_rows_int = op->attribute<pir::Int64Attribute>("num_rows").data();
+    int64_t num_rows_int64 =
+        op->attribute<pir::Int64Attribute>("num_rows").data();
+    // TODO(large-tensor): num_rows may exceed INT_MAX
+    PADDLE_ENFORCE_LE_INT_MAX(num_rows_int64, "num_rows");
+    int num_rows_int = static_cast<int>(num_rows_int64);
     num_rows_dim = symbol::DimExpr(num_rows_int);
   } else if (op->operand_source(0)) {
     const auto &num_rows_shape_or_data =
@@ -300,8 +355,11 @@ bool EyeOpInferSymbolicShape(pir::Operation *op,
   }
 
   if (op->HasAttribute("num_columns")) {
-    int num_columns_int =
+    int64_t num_columns_int64 =
         op->attribute<pir::Int64Attribute>("num_columns").data();
+    // TODO(large-tensor): num_columns may exceed INT_MAX
+    PADDLE_ENFORCE_LE_INT_MAX(num_columns_int64, "num_columns");
+    int num_columns_int = static_cast<int>(num_columns_int64);
     if (num_columns_int == -1) {
       num_columns_dim = num_rows_dim;
     } else {

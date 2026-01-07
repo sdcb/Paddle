@@ -52,8 +52,8 @@ void ExpandBackward(const Context& dev_ctx,
     }
     const auto out_grad0 = EigenVector<float>::Flatten(out_grad_fp32);
     auto& place = *dev_ctx.eigen_device();
-    phi::funcs::EigenBroadcastGrad<std::decay_t<decltype(place)>, float, Dims>::
-        Eval(place, x_grad, out_grad0, reduce_dims, reshape_dims);
+    funcs::EigenBroadcastGrad<std::decay_t<decltype(place)>, float, Dims>::Eval(
+        place, x_grad, out_grad0, reduce_dims, reshape_dims);
 
     if constexpr (std::is_same_v<T, dtype::float16>) {
       phi::CastKernel<float, Context>(
@@ -74,8 +74,8 @@ void ExpandBackward(const Context& dev_ctx,
     }
     auto out_grad0 = EigenVector<T>::Flatten(out_grad);
     auto& place = *dev_ctx.eigen_device();
-    phi::funcs::EigenBroadcastGrad<std::decay_t<decltype(place)>, T, Dims>::
-        Eval(place, x_grad, out_grad0, reduce_dims, reshape_dims);
+    funcs::EigenBroadcastGrad<std::decay_t<decltype(place)>, T, Dims>::Eval(
+        place, x_grad, out_grad0, reduce_dims, reshape_dims);
   }
 }
 
@@ -85,8 +85,10 @@ void ExpandGradKernel(const Context& dev_ctx,
                       const DenseTensor& out_grad,
                       const IntArray& shape,
                       DenseTensor* in_grad) {
-  auto expand_shape = shape.GetData();
   auto x_dims = x.dims();
+  auto out_grad_dims = out_grad.dims();
+  std::vector<int64_t> expand_shape = phi::vectorize<int64_t>(out_grad_dims);
+
   if (x.numel() == 0 || out_grad.numel() == 0 ||
       (in_grad && in_grad->numel() == 0)) {
     dev_ctx.template Alloc<T>(in_grad);
@@ -99,11 +101,11 @@ void ExpandGradKernel(const Context& dev_ctx,
     return;
   }
 
-  if (in_grad->dims() == out_grad.dims()) {
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, in_grad);
+  if (in_grad->dims() == out_grad_dims) {
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, in_grad);
     return;
   }
-  auto vec_in_dims = common::vectorize<int>(x_dims);
+  auto vec_in_dims = common::vectorize<int64_t>(x_dims);
   auto diff = expand_shape.size() - vec_in_dims.size();
   vec_in_dims.insert(vec_in_dims.begin(), diff, 1);
   // 1. reshape_dims_vec is the broadcast parameter.
@@ -112,11 +114,7 @@ void ExpandGradKernel(const Context& dev_ctx,
   //    size.
   std::vector<int> repeat_times(vec_in_dims.size());
   for (size_t i = 0; i < vec_in_dims.size(); ++i) {
-    if (expand_shape[i] < 0) {
-      repeat_times[i] = 1;
-    } else {
-      repeat_times[i] = expand_shape[i] / vec_in_dims[i];
-    }
+    repeat_times[i] = expand_shape[i] / vec_in_dims[i];
   }
   std::vector<int> reshape_dims_vec;
   std::vector<int> reduce_dims_vec;

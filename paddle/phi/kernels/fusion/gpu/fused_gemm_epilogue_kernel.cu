@@ -23,11 +23,10 @@ namespace fusion {
 #if (defined(PADDLE_WITH_CUDA) && CUDA_VERSION >= 11060) || \
     defined(PADDLE_WITH_HIP)
 template <typename T>
-phi::funcs::MatmulFusedType GetFwdFusedEpilogueType(
-    const phi::GPUContext& dev_ctx,
-    const std::string& activation,
-    phi::DenseTensor* reserve_space) {
-  using FusedType = phi::funcs::MatmulFusedType;
+funcs::MatmulFusedType GetFwdFusedEpilogueType(const GPUContext& dev_ctx,
+                                               const std::string& activation,
+                                               DenseTensor* reserve_space) {
+  using FusedType = funcs::MatmulFusedType;
 
   FusedType fused_type = FusedType::kMatmulBias;
   if (activation != "none") {
@@ -104,19 +103,18 @@ void FusedGemmEpilogueKernel(const Context& dev_ctx,
           << ", activation=" << activation << ", fused_type=" << fused_type
           << ", reserve_space=" << reserve_space;
 
-  phi::funcs::LinearWithCublasLt<T>::Run(
-      dev_ctx,
-      &x,
-      &y,
-      out,
-      static_cast<const void*>(bias.data<T>()),
-      reserve_data,
-      M,
-      N,
-      K,
-      trans_x,
-      trans_y,
-      fused_type);
+  funcs::LinearWithCublasLt<T>::Run(dev_ctx,
+                                    &x,
+                                    &y,
+                                    out,
+                                    static_cast<const void*>(bias.data<T>()),
+                                    reserve_data,
+                                    M,
+                                    N,
+                                    K,
+                                    trans_x,
+                                    trans_y,
+                                    fused_type);
 #endif
 }
 
@@ -129,5 +127,5 @@ PD_REGISTER_KERNEL(fused_gemm_epilogue,
                    phi::fusion::FusedGemmEpilogueKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

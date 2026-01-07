@@ -44,8 +44,8 @@ void SyncBatchNormCooGradKernel(
     DenseTensor* scale_grad,
     DenseTensor* bias_grad) {
   EmptyLikeCooKernel<T, Context>(dev_ctx, x, x_grad);
-  *scale_grad = phi::EmptyLike<T, Context>(dev_ctx, scale);
-  *bias_grad = phi::EmptyLike<T, Context>(dev_ctx, bias);
+  *scale_grad = EmptyLike<T, Context>(dev_ctx, scale);
+  *bias_grad = EmptyLike<T, Context>(dev_ctx, bias);
   phi::SyncBatchNormGradKernel<T, Context>(dev_ctx,
                                            x.values(),
                                            scale,
@@ -74,7 +74,7 @@ PD_REGISTER_KERNEL(sync_batch_norm_coo_grad,
                    ALL_LAYOUT,
                    phi::sparse::SyncBatchNormCooGradKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #else
 PD_REGISTER_KERNEL(sync_batch_norm_coo_grad,
                    GPU,
@@ -82,5 +82,5 @@ PD_REGISTER_KERNEL(sync_batch_norm_coo_grad,
                    phi::sparse::SyncBatchNormCooGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

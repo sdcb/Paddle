@@ -45,6 +45,7 @@ typedef SSIZE_T ssize_t;
 #include "paddle/phi/core/memory/memcpy.h"
 #include "paddle/phi/core/sparse_coo_tensor.h"
 #include "paddle/phi/core/sparse_csr_tensor.h"
+#include "paddle/phi/core/visit_type.h"
 #include "paddle/phi/core/vocab/string_array.h"
 #include "pybind11/detail/internals.h"
 #include "pybind11/numpy.h"
@@ -55,9 +56,9 @@ typedef SSIZE_T ssize_t;
 #include "paddle/fluid/eager/api/generated/eager_generated/backwards/nodes.h"
 #include "paddle/fluid/eager/api/generated/eager_generated/forwards/dygraph_functions.h"
 #include "paddle/fluid/framework/python_headers.h"
-#include "paddle/fluid/imperative/amp_utils.h"
 #include "paddle/fluid/pybind/cuda_streams_py.h"
 #include "paddle/fluid/pybind/tensor_py.h"
+#include "paddle/fluid/pybind/xpu_streams_py.h"
 #include "paddle/phi/core/distributed/auto_parallel/dist_tensor.h"
 #include "paddle/phi/core/distributed/auto_parallel/reshard/reshard_function.h"
 #include "paddle/phi/core/distributed/auto_parallel/reshard/reshard_function_registry.h"
@@ -65,6 +66,7 @@ typedef SSIZE_T ssize_t;
 #include "paddle/phi/core/memory/allocation/mmap_allocator.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
+#include "paddle/phi/kernels/funcs/strided_utils.h"
 #include "paddle/utils/pybind.h"
 
 COMMON_DECLARE_bool(set_to_1d);
@@ -248,12 +250,12 @@ static PyObject* tensor_method_numpy(TensorObject* self,
   }
 
   phi::DenseTensor cpu_tensor;
-  phi::CPUPlace cpu_place;
+  CPUPlace cpu_place;
 
   if (self->tensor.is_cpu() || self->tensor.is_gpu_pinned() ||
       self->tensor.is_xpu_pinned()) {
     eager_gil_scoped_release guard;
-    phi::CPUPlace place;
+    CPUPlace place;
     if (self->tensor.is_selected_rows()) {
       VLOG(6) << "Getting SelectedRows's numpy value";
       auto* selected_rows =
@@ -357,11 +359,11 @@ static PyObject* tensor_method_numpy(TensorObject* self,
                                       kind);
 #else
       PADDLE_THROW(
-          common::errors::Unavailable("The `numpy()` method of (Dist)Tensor "
+          common::errors::Unavailable("The numpy() method of DistTensor "
                                       "is not supported in the current "
-                                      "PaddlePaddle, please recompile and "
-                                      "installPaddlePaddle with the option "
-                                      "of `WITH_DISTRIBUTE=ON`."));
+                                      "Paddle, please recompile and "
+                                      "install Paddle with the option "
+                                      "of WITH_DISTRIBUTE=ON."));
 #endif
     } else {
       VLOG(6) << "Getting DenseTensor's numpy value";
@@ -380,7 +382,7 @@ static PyObject* tensor_method_numpy(TensorObject* self,
 #endif
 #if defined(PADDLE_WITH_XPU)
   } else if (self->tensor.is_xpu()) {
-    phi::CPUPlace place;
+    CPUPlace place;
     if (self->tensor.is_selected_rows()) {
       VLOG(6) << "Getting SelectedRows's numpy value";
       auto* selected_rows =
@@ -416,11 +418,11 @@ static PyObject* tensor_method_numpy(TensorObject* self,
                            dense_tensor.Holder()->size());
 #else
       PADDLE_THROW(
-          common::errors::Unavailable("The `numpy()` method of (Dist)Tensor "
+          common::errors::Unavailable("The numpy() method of DistTensor "
                                       "is not supported in the current "
-                                      "PaddlePaddle, please recompile and "
-                                      "installPaddlePaddle with the option "
-                                      "of `WITH_DISTRIBUTE=ON`."));
+                                      "Paddle, please recompile and "
+                                      "install Paddle with the option "
+                                      "of WITH_DISTRIBUTE=ON."));
 #endif
     } else {
       VLOG(6) << "Getting DenseTensor's numpy value";
@@ -706,13 +708,31 @@ static PyObject* tensor_method_copy_(TensorObject* self,
                                      PyObject* args,
                                      PyObject* kwargs) {
   EAGER_TRY
-  paddle::Tensor& src_tensor = CastPyArg2Tensor(PyTuple_GET_ITEM(args, 0), 0);
+  PyObject* other_tensor = nullptr;
+  bool blocking = true;
+  bool non_blocking = false;
+  static char* kwlist[] = {const_cast<char*>("other"),
+                           const_cast<char*>("blocking"),
+                           const_cast<char*>("non_blocking"),
+                           nullptr};
+  bool flag = PyArg_ParseTupleAndKeywords(
+      args, kwargs, "|Obb", kwlist, &other_tensor, &blocking, &non_blocking);
+  blocking = !blocking || non_blocking ? false : true;
+  PADDLE_ENFORCE_EQ(flag,
+                    true,
+                    common::errors::PreconditionNotMet(
+                        "Could not parse args and kwargs successfully, "
+                        "please check your input first and make "
+                        "sure you are on the right way. "
+                        "The expected arguments as follow: ("
+                        "other, blocking, non_blocking)"));
+
+  paddle::Tensor& src_tensor = CastPyArg2Tensor(other_tensor, 0);
   const phi::distributed::ProcessMesh* mesh = nullptr;
   if (InputsContainDistTensor(&mesh, src_tensor, self->tensor)) {
     ConvertAllInputsToDistTensor(mesh, src_tensor, self->tensor);
   }
 
-  bool blocking = CastPyArg2AttrBoolean(PyTuple_GET_ITEM(args, 1), 1);
   VLOG(6) << "Start Copy Tensor " << src_tensor.name() << " to "
           << self->tensor.name();
   if (!self->tensor.initialized()) {
@@ -741,7 +761,7 @@ static PyObject* tensor_method_copy_(TensorObject* self,
 
   VLOG(6) << "Finish Copy Tensor " << src_tensor.name() << " to "
           << self->tensor.name();
-  RETURN_PY_NONE
+  return ToPyObject(self->tensor);
 
   EAGER_CATCH_AND_THROW_RETURN_NULL
 }
@@ -809,7 +829,7 @@ static PyObject* tensor_method_clone(TensorObject* self,
             "We can only support initialized tensor in clone, however we got "
             "uninitialized tensor %s, please check your code.",
             self->tensor.name()));
-
+    SetPythonStack();
     out = assign_ad_func(self->tensor);
   }
   return ToPyObject(out);
@@ -862,8 +882,9 @@ static PyObject* tensor_retain_grads(TensorObject* self,
     auto meta = egr::EagerUtils::autograd_meta(&(self->tensor));
     if (!meta->GetMutableGradNode()) {
       VLOG(6) << "Make grad node of tensor: " << self->tensor.name()
-              << "become accumulation node";
-      meta->SetGradNode(std::make_shared<egr::GradNodeAccumulation>(meta));
+              << " become accumulation node";
+      meta->SetGradNode(
+          std::make_shared<egr::GradNodeAccumulation>(self->tensor));
     }
     egr::egr_utils_api::RetainGradForTensor(self->tensor);
   }
@@ -930,8 +951,8 @@ static PyObject* tensor_clear_gradient(TensorObject* self,
     grad = egr::EagerUtils::mutable_grad(self->tensor);
     PADDLE_ENFORCE(
         grad != nullptr,
-        common::errors::Fatal("Detected nullptr grad"
-                              "Please check if you have manually cleared"
+        common::errors::Fatal("Detected nullptr grad. "
+                              "Please check if you have manually cleared "
                               "the grad inside autograd_meta"));
   } else {
     auto meta = egr::EagerUtils::unsafe_autograd_meta(self->tensor);
@@ -994,8 +1015,8 @@ static PyObject* tensor__zero_grads(TensorObject* self,
     paddle::Tensor* grad = egr::EagerUtils::mutable_grad(self->tensor);
     PADDLE_ENFORCE(
         grad != nullptr,
-        common::errors::Fatal("Detected nullptr grad"
-                              "Please check if you have manually cleared"
+        common::errors::Fatal("Detected nullptr grad. "
+                              "Please check if you have manually cleared "
                               "the grad inside autograd_meta"));
     if (grad->initialized()) {
       if (grad->is_dense_tensor() || grad->is_dist_tensor()) {
@@ -1354,16 +1375,16 @@ Returns:
 
 Examples:
 
-    .. code-block:: python
+    .. code-block:: pycon
 
         >>> import paddle
 
         >>> x = paddle.to_tensor([1.0], stop_gradient=False)
         >>> underline_x = x.get_tensor()
         >>> print(underline_x)
-          - place: Place(cpu)
           - shape: [1]
           - layout: NCHW
+          - place: Place(cpu)
           - dtype: float32
           - data: [1]
 )DOC");  // NOLINT
@@ -1389,8 +1410,8 @@ static PyObject* tensor_method_get_underline_tensor(TensorObject* self,
     return ToPyObject(tensor);
 #else
     PADDLE_THROW(common::errors::Unavailable(
-        "The `get_tensor()` method of (Dist)Tensor is not supported in the "
-        "current PaddlePaddle, please recompile and installPaddlePaddle "
+        "The get_tensor() method of DistTensor is not supported in the "
+        "current Paddle, please recompile and install Paddle "
         "with the option of `WITH_DISTRIBUTE=ON`."));
 #endif
   } else {
@@ -1406,30 +1427,61 @@ static PyObject* tensor_method_set_underline_tensor(TensorObject* self,
   auto& value = GetTensorFromArgs("set_tensor", "value", args, 0, false);
   if (!value.defined()) {
     PADDLE_THROW(
-        common::errors::Unavailable("The `set_tensor()` method of (Dist)Tensor "
+        common::errors::Unavailable("The set_tensor() method of DistTensor "
                                     "get a non initialized src value"));
   } else if (value.is_dense_tensor()) {
     auto* src_tensor = static_cast<phi::DenseTensor*>(value.impl().get());
     if (self->tensor.is_dense_tensor()) {
       auto* dst_tensor =
           static_cast<phi::DenseTensor*>(self->tensor.impl().get());
-      if (dst_tensor->place().GetType() != phi::AllocationType::UNDEFINED) {
-        framework::TensorCopy(*src_tensor, dst_tensor->place(), dst_tensor);
-      } else if (src_tensor->place().GetType() !=
-                 phi::AllocationType::UNDEFINED) {
-        framework::TensorCopy(*src_tensor, src_tensor->place(), dst_tensor);
+      if (self->tensor.has_allocation() && self->tensor.initialized() &&
+          (!dst_tensor->meta().is_contiguous() ||
+           !src_tensor->meta().is_contiguous()) &&
+          dst_tensor->place().GetType() == src_tensor->place().GetType()) {
+        VLOG(8) << "set_tensor() method , src or dst tensor is not contiguous ";
+        if (!FLAGS_use_stride_kernel) {
+          PADDLE_THROW(common::errors::Fatal(
+              "FLAGS_use_stride_kernel is closed. Strided kernel "
+              "be called, something wrong has happened!"));
+        }
+        PD_VISIT_ALL_TYPES(
+            src_tensor->dtype(), "StridedTensorCopy", ([&] {
+              phi::StridedTensorCopy<data_t>(
+                  *src_tensor,
+                  common::vectorize<int64_t>(dst_tensor->dims()),
+                  common::vectorize<int64_t>(dst_tensor->strides()),
+                  dst_tensor->offset(),
+                  dst_tensor);
+            }));
       } else {
-        PADDLE_THROW(common::errors::Unavailable(
-            "The `set_tensor()` method of (Dist)Tensor get a src value with "
-            "undefined place"));
+        if (!dst_tensor->meta().is_contiguous()) {
+          PADDLE_THROW(common::errors::Fatal(
+              "dst_tensor is not contiguous and src_tensor has different place "
+              "with dst_tensor, so Strided kernel "
+              "can't be called, please change src_tensor'place as same as "
+              "dst_tensor'place or change dst_tensor to be contiguous"));
+        } else if (!src_tensor->meta().is_contiguous()) {
+          VLOG(6) << "src_tensor is not contiguous, so dst_tensor will be not "
+                     "contiguous after set_value ";
+        }
+
+        if (dst_tensor->place().GetType() != phi::AllocationType::UNDEFINED) {
+          framework::TensorCopy(*src_tensor, dst_tensor->place(), dst_tensor);
+        } else if (src_tensor->place().GetType() !=
+                   phi::AllocationType::UNDEFINED) {
+          framework::TensorCopy(*src_tensor, src_tensor->place(), dst_tensor);
+        } else {
+          PADDLE_THROW(common::errors::Unavailable(
+              "The set_tensor() method of DistTensor get a src value with "
+              "undefined place"));
+        }
       }
 
     } else {
       PADDLE_THROW(common::errors::Unavailable(
-          "The `set_tensor()` method of non DenseTensor get a DenseTensor src "
+          "The set_tensor() method of non DenseTensor get a DenseTensor src "
           "value"));
     }
-
   } else if (value.is_dist_tensor()) {
 #ifdef PADDLE_WITH_DISTRIBUTE
     auto* src_tensor =
@@ -1448,25 +1500,24 @@ static PyObject* tensor_method_set_underline_tensor(TensorObject* self,
                               dst_tensor->unsafe_mutable_value());
       } else {
         PADDLE_THROW(common::errors::Unavailable(
-            "The `set_tensor()` method of (Dist)Tensor get a src value with "
+            "The set_tensor() method of DistTensor get a src value with "
             "undefined place"));
       }
 
     } else {
       PADDLE_THROW(
-          common::errors::Unavailable("The `set_tensor()` method of non "
+          common::errors::Unavailable("The set_tensor() method of non "
                                       "DistTensor get a DistTensor src value"));
     }
 #else
     PADDLE_THROW(common::errors::Unavailable(
-        "The `set_tensor()` method of (Dist)Tensor is not supported in the "
-        "current PaddlePaddle, please recompile and installPaddlePaddle "
-        "with the option of `WITH_DISTRIBUTE=ON`."));
+        "The set_tensor() method of DistTensor is not supported in the "
+        "current Paddle, please recompile and install Paddle "
+        "with the option of WITH_DISTRIBUTE=ON."));
 #endif
-
   } else {
     PADDLE_THROW(common::errors::Unavailable(
-        "The `set_tensor()` method of (Dist)Tensor get a non "
+        "The set_tensor() method of DistTensor get a non "
         "DenseTensor/DistTensor src value"));
   }
   RETURN_PY_NONE
@@ -1544,7 +1595,7 @@ static PyObject* tensor__getitem_dygraph(TensorObject* self,
 
   auto tensor = self->tensor;
   const int rank = tensor.shape().size();
-  std::vector<int> slice_starts, slice_ends, slice_strides;
+  std::vector<int64_t> slice_starts, slice_ends, slice_strides;
   std::vector<int64_t> slice_axes, decrease_axis, infer_flags, none_axes;
 
   bool has_advanced_index = false;
@@ -1602,143 +1653,17 @@ static PyObject* tensor__getitem_dygraph(TensorObject* self,
                                                         &trans_dim,
                                                         &out_is_view);
 
-  bool has_bool_index = false;
-  for (auto& index : transed_index) {
-    if (index.dtype() == phi::DataType::BOOL) {
-      has_bool_index = true;
-    }
-  }
   const int index_size = PyTuple_GET_SIZE(index_ptr);
-  const bool is_combined_bool = has_bool_index && index_size > 1;
+  ApplyGetitem(index_size,
+               pos_of_new_dim,
+               rank_of_new_dim,
+               &transed_index,
+               &tensor,
+               &self->tensor,
+               &sub_tensor,
+               &transed_tensor,
+               &out);
 
-  auto handle_transpose = [&](Tensor& out) {
-    if (pos_of_new_dim != 0) {
-      std::vector<int> perm(out.shape().size(), 0);
-      int tmp1 = rank_of_new_dim, tmp2 = 0,
-          tmp3 = pos_of_new_dim + rank_of_new_dim;
-      for (int i = 0; i < static_cast<int>(out.shape().size()); ++i) {
-        if (i < pos_of_new_dim) {
-          perm[i] = tmp1++;
-        } else if (i >= pos_of_new_dim &&
-                   i < pos_of_new_dim + rank_of_new_dim) {
-          perm[i] = tmp2++;
-        } else {
-          perm[i] = tmp3++;
-        }
-      }
-      out = transpose_ad_func(out, perm);
-    }
-  };
-
-  if (transed_index.size() == 1 &&
-      transed_index[0].dtype() == phi::DataType::BOOL) {
-    // get value for bool tensor
-    int64_t slice_offset = 0;
-    out = getValueForBoolTensor(
-        transed_tensor, transed_index[0], slice_offset, is_combined_bool);
-  } else {
-    // get value for int tensor
-    ParseBoolAndBroadcastIndices(&transed_index);
-
-#ifdef PADDLE_WITH_CUDA
-    bool has_empty_index = false;
-    for (const auto& tensor : transed_index) {
-      if (!tensor.initialized()) {
-        has_empty_index = true;
-        break;
-      }
-    }
-
-    if (transed_tensor.is_gpu() && !is_combined_bool && !has_empty_index) {
-      const phi::distributed::ProcessMesh* mesh = nullptr;
-      if (InputsContainDistTensor(&mesh, transed_tensor, transed_index)) {
-        ConvertAllInputsToDistTensor(mesh, transed_tensor, transed_index);
-      }
-
-      transed_index = expand_outplace(transed_index);
-
-      for (int i = 0; i < pos_of_new_dim; ++i) {
-        transed_index.insert(
-            transed_index.begin(),
-            empty_ad_func(
-                {}, transed_index[0].dtype(), transed_index[0].place()));
-      }
-
-      while (transed_index.size() <
-             static_cast<size_t>(transed_tensor.dims().size())) {
-        transed_index.emplace_back(empty_ad_func(
-            {}, transed_index[0].dtype(), transed_index[0].place()));
-      }
-
-      int64_t slice_offset =
-          static_cast<int64_t>(reinterpret_cast<char*>(sub_tensor.data()) -
-                               reinterpret_cast<char*>(tensor.data()));
-
-      std::vector<paddle::Tensor> transed_index_int64;
-      for (auto& indice : transed_index) {
-        if (indice.defined() && indice.dtype() == paddle::DataType::INT32) {
-          indice = indice.cast(paddle::DataType::INT64);  // int32 -> int64
-        }
-        transed_index_int64.push_back(indice);
-      }
-
-      AdvancedIndex ad = AdvancedIndex(transed_tensor, transed_index_int64);
-      const bool accumulate = true;
-      out = index_elementwise_get_ad_func(tensor,
-                                          ad.indices,
-                                          ad.src_sizes,
-                                          ad.src_strides,
-                                          ad.indexed_sizes,
-                                          ad.indexed_strides,
-                                          slice_offset,
-                                          accumulate);
-      out_is_view = false;
-      return ToPyObject(out);
-    } else {
-      paddle::Tensor transed_advanced_index_tensor;
-      if (transed_index.size() > 1) {
-        transed_advanced_index_tensor = stack_ad_func(transed_index, -1);
-      } else {
-        // fast path for single index tensor, since stack is much slower than
-        // unsqueeze
-        transed_advanced_index_tensor =
-            unsqueeze_ad_func(transed_index[0], {-1});
-      }
-
-      const phi::distributed::ProcessMesh* mesh = nullptr;
-      if (InputsContainDistTensor(
-              &mesh, transed_tensor, transed_advanced_index_tensor)) {
-        ConvertAllInputsToDistTensor(
-            mesh, transed_tensor, transed_advanced_index_tensor);
-      }
-      out = gather_nd_ad_func(transed_tensor, transed_advanced_index_tensor);
-      handle_transpose(out);
-      return ToPyObject(out);
-    }
-#else
-    paddle::Tensor transed_advanced_index_tensor;
-    if (transed_index.size() > 1) {
-      transed_advanced_index_tensor = stack_ad_func(transed_index, -1);
-    } else {
-      // fast path for single index tensor, since stack is much slower than
-      // unsqueeze
-      transed_advanced_index_tensor = unsqueeze_ad_func(transed_index[0], {-1});
-    }
-
-    const phi::distributed::ProcessMesh* mesh = nullptr;
-    if (InputsContainDistTensor(
-            &mesh, transed_tensor, transed_advanced_index_tensor)) {
-      ConvertAllInputsToDistTensor(
-          mesh, transed_tensor, transed_advanced_index_tensor);
-    }
-
-    out = gather_nd_ad_func(transed_tensor, transed_advanced_index_tensor);
-    handle_transpose(out);
-    return ToPyObject(out);
-#endif
-  }
-
-  handle_transpose(out);
   return ToPyObject(out);
   EAGER_CATCH_AND_THROW_RETURN_NULL
 }
@@ -1922,7 +1847,7 @@ static PyObject* tensor__setitem_dygraph(TensorObject* self,
   }
   const int rank = tensor.shape().size();
   const int size = PyTuple_GET_SIZE(index_ptr);
-  std::vector<int> slice_starts, slice_ends, slice_strides;
+  std::vector<int64_t> slice_starts, slice_ends, slice_strides;
   std::vector<int64_t> slice_axes, decrease_axis, infer_flags, none_axes;
 
   bool has_advanced_index = false;
@@ -2063,178 +1988,95 @@ static PyObject* tensor__setitem_dygraph(TensorObject* self,
 
     // Release gil and do tracing
     py::gil_scoped_release release;
-    if (value_tensor.initialized()) {
-      if (self->tensor.dtype() != value_tensor.dtype()) {
-        if (egr::Controller::Instance().GetAMPLevel() !=
-            paddle::imperative::AmpLevel::O0) {
-          paddle::small_vector<std::vector<paddle::Tensor>,
-                               egr::kSlotSmallVectorSize>
-              tmps = {{self->tensor}, {value_tensor}};
-          auto amp_dtype =
-              paddle::imperative::GetAmpDestDtype("index_put", tmps);
-          self->tensor = paddle::imperative::AmpAutoCast(
-              self->tensor.name(), self->tensor, amp_dtype, "index_put");
-          value_tensor = paddle::imperative::AmpAutoCast(
-              value_tensor.name(), value_tensor, amp_dtype, "index_put");
+
+    ApplySetitem(trans_dim,
+                 pos_of_new_dim,
+                 &out_is_view,
+                 &transed_index,
+                 &tensor,
+                 &self->tensor,
+                 &sub_tensor,
+                 &transed_sub_tensor,
+                 &value_tensor,
+                 &values);
+
+    if (out_is_view) {
+      // NOTE(zoooo0820): if out_is_view is true, it is a case of
+      // combined-indexing setitem, i.e. firstly we get a view of
+      // self->tensor, then modified it with inplace api index_put_ For now,
+      // in design of Paddle, the forward result is right. But the backward
+      // edge can not be established because the Base Tensor cannot sense
+      // whether it has been modified by other operations. Following codes are
+      // to add a new node (set_value_with_tensor_grad) to record the backward
+      // edge, with out ad_function which needs to do the forward calculation.
+
+      egr::AutogradMeta* x_autograd_meta =
+          egr::EagerUtils::nullable_autograd_meta(self->tensor);
+      egr::AutogradMeta* values_autograd_meta =
+          egr::EagerUtils::nullable_autograd_meta(transed_sub_tensor);
+      bool trace_backward = egr::Controller::Instance().HasGrad();
+      bool require_any_grad = egr::EagerUtils::ComputeRequireGrad(
+          trace_backward, x_autograd_meta, values_autograd_meta);
+      // Node Declaration
+      std::shared_ptr<SetValueWithTensorGradNode> grad_node;
+      // Set grad_node before API Call
+      if (require_any_grad) {
+        paddle::Tensor transback_sub_tensor =
+            transpose_ad_func(transed_sub_tensor, trans_back_dim);
+
+        const auto& values_tmp =
+            (require_any_grad && transback_sub_tensor.is_dense_tensor() &&
+             !std::dynamic_pointer_cast<phi::DenseTensor>(
+                  transback_sub_tensor.impl())
+                  ->meta()
+                  .is_contiguous())
+                ? paddle::Tensor(
+                      std::make_shared<phi::DenseTensor>(
+                          paddle::experimental::Trans2Contiguous(
+                              *(std::dynamic_pointer_cast<phi::DenseTensor>(
+                                  transback_sub_tensor.impl())))),
+                      transback_sub_tensor.mutable_autograd_meta(),
+                      transback_sub_tensor.name())
+                : transback_sub_tensor;
+        if (!x_autograd_meta) {
+          VLOG(3) << "x_autograd_meta is null and requires_any_grad is true";
+          x_autograd_meta = egr::EagerUtils::autograd_meta(&self->tensor);
         }
-        if (self->tensor.dtype() != value_tensor.dtype()) {
-          value_tensor = cast_ad_func(value_tensor, self->tensor.dtype());
-        }
+        grad_node = std::shared_ptr<SetValueWithTensorGradNode>(
+            new SetValueWithTensorGradNode(1, 2));  // NOLINT
+        grad_node->SetAttribute_starts(slice_starts);
+        grad_node->SetAttribute_ends(slice_ends);
+        grad_node->SetAttribute_steps(slice_strides);
+        grad_node->SetAttribute_axes(slice_axes);
+        grad_node->SetAttribute_decrease_axes(decrease_axis);
+        grad_node->SetAttribute_none_axes(none_axes);
+        grad_node->SetTensorWrapper_values(values_tmp);
+
+        paddle::memory::LogDeviceMemoryStats(
+            egr::Controller::Instance().GetExpectedPlace(),
+            "set_value_with_tensor");
+        egr::EagerUtils::CheckInplace(
+            self->tensor, x_autograd_meta, require_any_grad);
+        egr::EagerUtils::PassStopGradient(false, x_autograd_meta);
+        // SetGradOutMeta & SetEdges
+        grad_node->SetGradOutMeta(self->tensor, 0);
+        grad_node->SetGradOutMeta(transback_sub_tensor, 1);
+        grad_node->SetGradInMeta(self->tensor, 0);
+
+        egr::EagerUtils::SetOutRankWithSlot(x_autograd_meta, 0);
+        egr::EagerUtils::SetHistory(x_autograd_meta, grad_node);
       }
-
-      if (value_tensor.dims().size() > 1 && pos_of_new_dim != 0) {
-#ifdef PADDLE_WITH_CUDA
-        if (!value_tensor.is_gpu()) {
-          value_tensor = transpose_ad_func(value_tensor, trans_dim);
-        }
-#else
-        value_tensor = transpose_ad_func(value_tensor, trans_dim);
-#endif
-      }
-
-      const phi::distributed::ProcessMesh* mesh = nullptr;
-      if (InputsContainDistTensor(
-              &mesh, self->tensor, transed_sub_tensor, value_tensor)) {
-        ConvertAllInputsToDistTensor(
-            mesh, self->tensor, transed_sub_tensor, value_tensor);
-      }
-      paddle::Tensor mask_tensor;
-      if (!out_is_view &&
-          MaskedFillDispatching(
-              transed_sub_tensor, transed_index, &mask_tensor, &value_tensor)) {
-        transed_sub_tensor =
-            masked_fill__ad_func(transed_sub_tensor, mask_tensor, value_tensor);
-      } else {
-#ifdef PADDLE_WITH_CUDA
-        // TODO(czy): remove in the future
-        if (transed_sub_tensor.is_gpu()) {
-          transed_index = expandTensors(transed_index);
-          transed_index = expand_outplace(transed_index);
-          for (int i = 0; i < pos_of_new_dim; ++i) {
-            transed_index.insert(
-                transed_index.begin(),
-                empty_ad_func(
-                    {}, transed_index[0].dtype(), transed_index[0].place()));
-          }
-          while (transed_index.size() <
-                 static_cast<size_t>(transed_sub_tensor.dims().size())) {
-            transed_index.emplace_back(empty_ad_func(
-                {}, transed_index[0].dtype(), transed_index[0].place()));
-          }
-          int64_t slice_offset =
-              static_cast<int64_t>(reinterpret_cast<char*>(sub_tensor.data()) -
-                                   reinterpret_cast<char*>(tensor.data()));
-
-          std::vector<paddle::Tensor> transed_index_int64;
-          for (auto& indice : transed_index) {
-            if (indice.defined() && indice.dtype() == paddle::DataType::INT32) {
-              indice = indice.cast(paddle::DataType::INT64);  // int32 -> int64
-            }
-            transed_index_int64.push_back(indice);
-          }
-
-          AdvancedIndex ad =
-              AdvancedIndex(transed_sub_tensor, transed_index_int64);
-          transed_sub_tensor =
-              index_elementwise_put__ad_func(tensor,
-                                             ad.indices,
-                                             value_tensor,
-                                             ad.src_sizes,
-                                             ad.src_strides,
-                                             ad.indexed_sizes,
-                                             ad.indexed_strides,
-                                             slice_offset);
-          // New kernel does not need to transpose back, so set out_is_view to
-          // false. Remove when all cases use this branch.
-          out_is_view = false;
-
-        } else {
-          transed_sub_tensor = index_put__ad_func(
-              transed_sub_tensor, transed_index, value_tensor);
-        }
-#else
-        transed_sub_tensor =
-            index_put__ad_func(transed_sub_tensor, transed_index, value_tensor);
-#endif
-      }
-      if (out_is_view) {
-        // NOTE(zoooo0820): if out_is_view is true, it is a case of
-        // combined-indexing setitem, i.e. firstly we get a view of
-        // self->tensor, then modified it with inplace api index_put_ For now,
-        // in design of Paddle, the forward result is right. But the backward
-        // edge can not be established because the Base Tensor cannot sense
-        // whether it has been modified by other operations. Following codes are
-        // to add a new node (set_value_with_tensor_grad) to record the backward
-        // edge, with out ad_function which needs to do the forward calculation.
-
-        egr::AutogradMeta* x_autograd_meta =
-            egr::EagerUtils::nullable_autograd_meta(self->tensor);
-        egr::AutogradMeta* values_autograd_meta =
-            egr::EagerUtils::nullable_autograd_meta(transed_sub_tensor);
-        bool trace_backward = egr::Controller::Instance().HasGrad();
-        bool require_any_grad = egr::EagerUtils::ComputeRequireGrad(
-            trace_backward, x_autograd_meta, values_autograd_meta);
-        // Node Declaration
-        std::shared_ptr<SetValueWithTensorGradNode> grad_node;
-        // Set grad_node before API Call
-        if (require_any_grad) {
-          paddle::Tensor transback_sub_tensor =
-              transpose_ad_func(transed_sub_tensor, trans_back_dim);
-
-          const auto& values_tmp =
-              (require_any_grad && transback_sub_tensor.is_dense_tensor() &&
-               !std::dynamic_pointer_cast<phi::DenseTensor>(
-                    transback_sub_tensor.impl())
-                    ->meta()
-                    .is_contiguous())
-                  ? paddle::Tensor(
-                        std::make_shared<phi::DenseTensor>(
-                            paddle::experimental::Trans2Contiguous(
-                                *(std::dynamic_pointer_cast<phi::DenseTensor>(
-                                    transback_sub_tensor.impl())))),
-                        transback_sub_tensor.mutable_autograd_meta(),
-                        transback_sub_tensor.name())
-                  : transback_sub_tensor;
-          if (!x_autograd_meta) {
-            VLOG(3) << "x_autograd_meta is null and requires_any_grad is true";
-            x_autograd_meta = egr::EagerUtils::autograd_meta(&self->tensor);
-          }
-          grad_node = std::shared_ptr<SetValueWithTensorGradNode>(
-              new SetValueWithTensorGradNode(1, 2));  // NOLINT
-          grad_node->SetAttribute_starts(slice_starts);
-          grad_node->SetAttribute_ends(slice_ends);
-          grad_node->SetAttribute_steps(slice_strides);
-          grad_node->SetAttribute_axes(slice_axes);
-          grad_node->SetAttribute_decrease_axes(decrease_axis);
-          grad_node->SetAttribute_none_axes(none_axes);
-          grad_node->SetTensorWrapper_values(values_tmp);
-
-          paddle::memory::LogDeviceMemoryStats(
-              egr::Controller::Instance().GetExpectedPlace(),
-              "set_value_with_tensor");
-          egr::EagerUtils::CheckInplace(
-              self->tensor, x_autograd_meta, require_any_grad);
-          egr::EagerUtils::PassStopGradient(false, x_autograd_meta);
-          // SetGradOutMeta & SetEdges
-          grad_node->SetGradOutMeta(self->tensor, 0);
-          grad_node->SetGradOutMeta(transback_sub_tensor, 1);
-          grad_node->SetGradInMeta(self->tensor, 0);
-
-          egr::EagerUtils::SetOutRankWithSlot(x_autograd_meta, 0);
-          egr::EagerUtils::SetHistory(x_autograd_meta, grad_node);
-        }
-      } else {
-        self->tensor.set_autograd_meta(
-            transed_sub_tensor.mutable_autograd_meta());
-      }
-      if (PyCheckTensor(value_obj)) {
-        // pass the stop_gradient from value to tensor.
-        // pass stop gradient should be done after CheckInplace in
-        // set_value__dygraph_function.
-        if (!egr::EagerUtils::autograd_meta(&value_tensor)->StopGradient() &&
-            egr::EagerUtils::autograd_meta(&self->tensor)->StopGradient()) {
-          egr::EagerUtils::autograd_meta(&self->tensor)->SetStopGradient(false);
-        }
+    } else {
+      self->tensor.set_autograd_meta(
+          transed_sub_tensor.mutable_autograd_meta());
+    }
+    if (value_tensor.initialized() && PyCheckTensor(value_obj)) {
+      // pass the stop_gradient from value to tensor.
+      // pass stop gradient should be done after CheckInplace in
+      // set_value__dygraph_function.
+      if (!egr::EagerUtils::autograd_meta(&value_tensor)->StopGradient() &&
+          egr::EagerUtils::autograd_meta(&self->tensor)->StopGradient()) {
+        egr::EagerUtils::autograd_meta(&self->tensor)->SetStopGradient(false);
       }
     }
   }
@@ -2283,7 +2125,7 @@ static PyObject* tensor_register_grad_hook(TensorObject* self,
         VLOG(6) << "Detected nullptr grad_node, Leaf tensor should have had "
                    "grad_node with type: GradNodeAccumulation.";
         autograd_meta->SetGradNode(
-            std::make_shared<egr::GradNodeAccumulation>(autograd_meta));
+            std::make_shared<egr::GradNodeAccumulation>(self->tensor));
       }
     }
 
@@ -3043,6 +2885,7 @@ Note:
 Convert input Tensor to SparseCsrTensor.
 
 When input is SparseCooTensor, will convert `COO` to `CSR` . When input is DenseTensor, will convert `Dense` to `CSR` .
+When input is SparseCsrTensor, the function will directly return the input itself without performing any conversion.
 
 Returns:
     SparseCsrTensor
@@ -3069,6 +2912,10 @@ static PyObject* tensor_method_to_sparse_csr(TensorObject* self,
                                              PyObject* args,
                                              PyObject* kwargs) {
   EAGER_TRY
+  if (self->tensor.is_sparse_csr_tensor()) {
+    Py_INCREF(self);
+    return reinterpret_cast<PyObject*>(self);
+  }
   auto csr_tensor = self->tensor.to_sparse_csr();
   egr::EagerUtils::autograd_meta(&csr_tensor)
       ->SetStopGradient(
@@ -3318,11 +3165,8 @@ static PyObject* tensor_method__share_memory(TensorObject* self,
   const std::string& ipc_name = shared_writer_holder->ipc_name();
   memory::allocation::MemoryMapFdSet::Instance().Insert(ipc_name);
   // 4. copy data & reset holder
-  memory::Copy(phi::CPUPlace(),
-               shared_writer_holder->ptr(),
-               phi::CPUPlace(),
-               data_ptr,
-               data_size);
+  memory::Copy(
+      CPUPlace(), shared_writer_holder->ptr(), CPUPlace(), data_ptr, data_size);
   t->ResetHolder(shared_writer_holder);
   return ToPyObject(t);
 #else
@@ -3534,9 +3378,9 @@ Examples:
         []
 )DOC");                                  // NOLINT
 
-static PyObject* tensor_method_strides(TensorObject* self,
-                                       PyObject* args,
-                                       PyObject* kwargs) {
+static PyObject* tensor_method_get_strides(TensorObject* self,
+                                           PyObject* args,
+                                           PyObject* kwargs) {
   EAGER_TRY
   std::vector<int64_t> value;
   if (!self->tensor.defined() ||
@@ -3550,6 +3394,88 @@ static PyObject* tensor_method_strides(TensorObject* self,
     value[i] = stride[i];
   }
   return ToPyObject(value);
+  EAGER_CATCH_AND_THROW_RETURN_NULL
+}
+
+PyDoc_STRVAR(tensor_stride__doc__,  // NOLINT
+             R"DOC(stride($self, dim=None, /)
+--
+
+Returns the stride of self tensor.
+
+Stride is the jump necessary to go from one element to the next one in the specified dimension dim.
+A tuple of all strides is returned when no argument is passed in. Otherwise, an integer value is
+returned as the stride in the particular dimension dim.
+
+Args:
+    dim (int, optional): If specified, return the stride in the particular dimension dim.
+                         If None, return the strides of all dimensions. Default: None.
+
+Returns:
+    int or tuple: The stride of the tensor. If dim is None, returns a tuple of all strides.
+       If dim is specified, returns the stride in that dimension.
+
+Examples:
+
+    .. code-block:: python
+
+        >>> import paddle
+        >>> x = paddle.to_tensor([[1, 2, 3], [4, 5, 6]])
+        >>> x.stride()
+        [3, 1]
+        >>> x.stride(0)
+        3
+        >>> x.stride(1)
+        1
+        >>> x.stride(-1)
+        1
+)DOC");                             // NOLINT
+
+static PyObject* tensor_method_stride(TensorObject* self,
+                                      PyObject* args,
+                                      PyObject* kwargs) {
+  EAGER_TRY
+  static char* kwlist[] = {const_cast<char*>("dim"), nullptr};
+  PyObject* dim_obj = nullptr;
+
+  if (!PyArg_ParseTupleAndKeywords(args, kwargs, "|O", kwlist, &dim_obj)) {
+    RETURN_PY_NONE
+  }
+
+  std::vector<int64_t> value;
+  if (!self->tensor.defined() ||
+      (!self->tensor.is_dense_tensor() && !self->tensor.is_dist_tensor())) {
+    return ToPyObject(value);
+  }
+
+  auto stride = self->tensor.strides();
+  int rank = static_cast<int>(stride.size());
+  value.resize(rank);
+  for (int i = 0; i < rank; i++) {
+    value[i] = stride[i];
+  }
+
+  if (dim_obj == nullptr || dim_obj == Py_None) {
+    return ToPyObject(value);
+  }
+
+  if (!PyLong_Check(dim_obj)) {
+    PADDLE_THROW(common::errors::InvalidArgument("dim must be an integer"));
+  }
+
+  int dim = static_cast<int>(PyLong_AsLong(dim_obj));
+  dim = dim < 0 ? dim + rank : dim;
+  PADDLE_ENFORCE_EQ(
+      dim >= 0 && dim < rank,
+      true,
+      common::errors::InvalidArgument(
+          "Dimension out of range (expected to be in range of [%d, %d], "
+          "but got %d)",
+          -rank,
+          rank - 1,
+          static_cast<int>(PyLong_AsLong(dim_obj))));
+
+  return ToPyObject(value[dim]);
   EAGER_CATCH_AND_THROW_RETURN_NULL
 }
 
@@ -3821,6 +3747,28 @@ static PyObject* tensor_method__uva(TensorObject* self,
   EAGER_CATCH_AND_THROW_RETURN_NULL
 }
 #endif
+
+#if defined(PADDLE_WITH_XPU)
+static PyObject* tensor_method__record_stream(TensorObject* self,
+                                              PyObject* args,
+                                              PyObject* kwargs) {
+  EAGER_TRY
+  VLOG(4)
+      << "Running in tensor_method__record_stream: record stream for Tensor.";
+  auto* tensor = static_cast<phi::DenseTensor*>(self->tensor.impl().get());
+  if (tensor) {
+    const auto& device_id = paddle::platform::GetXPUCurrentDeviceId();
+    auto place = phi::XPUPlace(device_id);
+    auto* dev_ctx = static_cast<phi::XPUContext*>(
+        phi::DeviceContextPool::Instance().Get(place));
+    auto stream = dev_ctx->get_current_stream_handle()->raw_stream();
+    memory::RecordStream(tensor->Holder(), stream);
+  }
+  RETURN_PY_NONE
+  EAGER_CATCH_AND_THROW_RETURN_NULL
+}
+#endif
+
 static PyObject* tensor_method__is_string_tensor_hold_allocation(
     TensorObject* self, PyObject* args, PyObject* kwargs) {
   EAGER_TRY
@@ -4131,9 +4079,13 @@ PyMethodDef variable_methods[] = {  // NOLINT
      METH_VARARGS | METH_KEYWORDS,
      tensor_is_contiguous__doc__},
     {"get_strides",
-     (PyCFunction)(void (*)())tensor_method_strides,
+     (PyCFunction)(void (*)())tensor_method_get_strides,
      METH_VARARGS | METH_KEYWORDS,
      tensor_get_strides__doc__},
+    {"stride",
+     (PyCFunction)(void (*)())tensor_method_stride,
+     METH_VARARGS | METH_KEYWORDS,
+     tensor_stride__doc__},
     {"_set_impl",
      (PyCFunction)(void (*)())tensor_method__set_impl,
      METH_VARARGS | METH_KEYWORDS,
@@ -4148,10 +4100,17 @@ PyMethodDef variable_methods[] = {  // NOLINT
      METH_VARARGS | METH_KEYWORDS,
      nullptr},
 #endif
+#if defined(PADDLE_WITH_XPU)
+    {"_record_stream",
+     (PyCFunction)(void (*)())tensor_method__record_stream,
+     METH_VARARGS | METH_KEYWORDS,
+     nullptr},
+#endif
     {nullptr, nullptr, 0, nullptr}};
 
 // variable_methods for core.eager.StringTensor
-PyMethodDef string_tensor_variable_methods[] = {  // NOLINT
+PyMethodDef string_tensor_variable_methods[] = {
+    // NOLINT
     {"numpy",
      (PyCFunction)(void (*)())tensor_method_numpy_for_string_tensor,
      METH_VARARGS | METH_KEYWORDS,

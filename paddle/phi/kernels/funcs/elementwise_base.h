@@ -41,7 +41,7 @@ template <class T, int Num>
 using ConditionalT = typename std::conditional_t<Num == 1, T, Array<T, Num>>;
 
 namespace funcs {
-using DDim = phi::DDim;
+using DDim = DDim;
 
 template <typename T, typename DeviceContext>
 class RowwiseTransformIterator;
@@ -51,13 +51,14 @@ class MidWiseTransformIterator;
 
 // NOTE(dzhwinter): ptrdiff_t in iterator is deprecated in c++17
 template <typename T>
-class RowwiseTransformIterator<T, CPUContext>
-    : public std::iterator<std::random_access_iterator_tag,
-                           T,
-                           std::ptrdiff_t,
-                           T *,
-                           T &> {
+class RowwiseTransformIterator<T, CPUContext> {
  public:
+  using iterator_category = std::random_access_iterator_tag;
+  using value_type = T;
+  using difference_type = std::ptrdiff_t;
+  using pointer = T *;
+  using reference = T &;
+
   RowwiseTransformIterator(const T *ptr, int n) : ptr_(ptr), i_(0), n_(n) {}
 
   RowwiseTransformIterator<T, CPUContext> &operator++() {
@@ -96,13 +97,14 @@ class RowwiseTransformIterator<T, CPUContext>
 };
 
 template <typename T>
-class MidWiseTransformIterator<T, CPUContext>
-    : public std::iterator<std::random_access_iterator_tag,
-                           T,
-                           std::ptrdiff_t,
-                           T *,
-                           T &> {
+class MidWiseTransformIterator<T, CPUContext> {
  public:
+  using iterator_category = std::random_access_iterator_tag;
+  using value_type = T;
+  using difference_type = std::ptrdiff_t;
+  using pointer = T *;
+  using reference = T &;
+
   MidWiseTransformIterator(const T *ptr, int n, int post)
       : ptr_(ptr), i_(0), j_(0), n_(n), post_(post) {}
 
@@ -202,14 +204,14 @@ class TransformFunctor {
   TransformFunctor(const DenseTensor &x,
                    const DenseTensor &y,
                    DenseTensor *z,
-                   const DeviceContext &ctx,
+                   const DeviceContext &dev_ctx,
                    Functor func,
                    const bool is_xsize_larger = true)
       : x_(x.data<T>()),
         y_(y.data<T>()),
-        z_(ctx.template Alloc<OutType>(z)),
+        z_(dev_ctx.template Alloc<OutType>(z)),
         nx_(x.numel()),
-        ctx_(ctx),
+        dev_ctx_(dev_ctx),
         func_(func),
         is_xsize_larger_(is_xsize_larger) {
     if (is_xsize_larger_ == false) {
@@ -219,20 +221,20 @@ class TransformFunctor {
 
   inline void Run() const {
     phi::Transform<DeviceContext> trans;
-    trans(ctx_, x_, x_ + nx_, y_, z_, func_);
+    trans(dev_ctx_, x_, x_ + nx_, y_, z_, func_);
   }
 
   inline void RunRowWise(int n) const {
     phi::Transform<DeviceContext> trans;
     if (is_xsize_larger_) {
-      trans(ctx_,
+      trans(dev_ctx_,
             x_,
             x_ + nx_,
             RowwiseTransformIterator<T, DeviceContext>(y_, n),
             z_,
             func_);
     } else {
-      trans(ctx_,
+      trans(dev_ctx_,
             y_,
             y_ + nx_,
             RowwiseTransformIterator<T, DeviceContext>(x_, n),
@@ -244,14 +246,14 @@ class TransformFunctor {
   inline void RunMidWise(int n, int post) const {
     phi::Transform<DeviceContext> trans;
     if (is_xsize_larger_) {
-      trans(ctx_,
+      trans(dev_ctx_,
             x_,
             x_ + nx_,
             MidWiseTransformIterator<T, DeviceContext>(y_, n, post),
             z_,
             func_);
     } else {
-      trans(ctx_,
+      trans(dev_ctx_,
             y_,
             y_ + nx_,
             MidWiseTransformIterator<T, DeviceContext>(x_, n, post),
@@ -265,7 +267,7 @@ class TransformFunctor {
   const T *y_;
   OutType *z_;
   int64_t nx_;
-  const DeviceContext &ctx_;
+  const DeviceContext &dev_ctx_;
   Functor func_;
   bool is_xsize_larger_;
 };
@@ -278,17 +280,17 @@ void CommonForwardBroadcastCPU(const DenseTensor &x,
                                int64_t *y_dims_array,
                                int64_t *out_dims_array,
                                int max_dim,
-                               const CPUContext &ctx,
+                               const CPUContext &dev_ctx,
                                Functor func,
                                const bool is_xsize_larger = true) {
   std::vector<int64_t> index_array(max_dim, 0);
   const T *x_data = x.data<T>();
   const T *y_data = y.data<T>();
   if (z && z->numel() == 0) {
-    ctx.Alloc<OutType>(z);
+    dev_ctx.Alloc<OutType>(z);
     return;
   }
-  OutType *out_data = ctx.Alloc<OutType>(z);
+  OutType *out_data = dev_ctx.Alloc<OutType>(z);
 
   const int64_t out_size = std::accumulate(out_dims_array,
                                            out_dims_array + max_dim,
@@ -479,8 +481,8 @@ static inline void GetDoubleGradSafeTensor(const DeviceContext &dev_ctx,
   if (ddx) {
     *ddx_safe = *ddx;
   } else {
-    auto meta = phi::DenseTensorMeta(x.dtype(), x.dims(), x.layout());
-    *ddx_safe = phi::Empty(dev_ctx, std::move(meta));
+    auto meta = DenseTensorMeta(x.dtype(), x.dims(), x.layout());
+    *ddx_safe = Empty(dev_ctx, std::move(meta));
     dev_ctx.template Alloc<T>(ddx_safe);
     SetConstant<DeviceContext, T> set_zero;
     set_zero(dev_ctx, ddx_safe, static_cast<T>(0));
@@ -570,19 +572,62 @@ struct InputSetter {
   }
 };
 
+static inline int GetVectorizedSizeWithDtype(const DenseTensor *tensor) {
+  int element_size = phi::SizeOf(tensor->dtype());
+  if (element_size > sizeof(float)) {
+    return 1;
+  }
+  constexpr int max_load_bits = 128;
+  int vec_size = max_load_bits / CHAR_BIT / element_size;
+  return vec_size;
+}
+static inline int GetVectorizedSizeWithAddress(const DenseTensor *tensor) {
+  int element_size = phi::SizeOf(tensor->dtype());
+  if (element_size > sizeof(float)) {
+    return 1;
+  }
+  uint64_t address = reinterpret_cast<uint64_t>(tensor->data());
+
+  // Currently, decide to deal with no more than 4 data once while adopting
+  // vectorization load/store, if performance test shows that dealing with
+  // 8 data once in vectorization load/store does get optimized, code below
+  // can begin with :
+  if (address % (element_size * 8) == 0) {
+    return 8;
+  } else if (address % (element_size * 4) == 0) {
+    return 4;
+  } else if (address % (element_size * 2) == 0) {
+    return 2;
+  } else {
+    return 1;
+  }
+}
+
 static int GetVectorizedSizeForTensors(
     const std::vector<const DenseTensor *> &ins,
-    const std::vector<DenseTensor *> &outs) {
+    const std::vector<DenseTensor *> &outs,
+    bool only_consider_outs_dtype = false) {
 #ifdef PADDLE_WITH_XPU_KP
   int vec_size = 256;
 #else
-  int vec_size = 4;
-  for (size_t i = 0; i < ins.size(); ++i) {
-    vec_size = std::min(vec_size, phi::GetVectorizedSize(ins[i]));
+  constexpr int max_vec_size = 8;
+  int vec_size = 1;
+  if (!only_consider_outs_dtype) {
+    for (size_t i = 0; i < ins.size(); ++i) {
+      vec_size = std::max(vec_size, GetVectorizedSizeWithDtype(ins[i]));
+    }
   }
   for (size_t i = 0; i < outs.size(); ++i) {
-    vec_size = std::min(vec_size, phi::GetVectorizedSize(outs[i]));
+    vec_size = std::max(vec_size, GetVectorizedSizeWithDtype(outs[i]));
   }
+
+  for (size_t i = 0; i < ins.size(); ++i) {
+    vec_size = std::min(vec_size, GetVectorizedSizeWithAddress(ins[i]));
+  }
+  for (size_t i = 0; i < outs.size(); ++i) {
+    vec_size = std::min(vec_size, GetVectorizedSizeWithAddress(outs[i]));
+  }
+  vec_size = std::min(vec_size, max_vec_size);
 #endif
   return vec_size;
 }
@@ -678,7 +723,7 @@ __device__ void VectorizedElementwiseKernelImpl(
     int num,
     int read_lens,
     Functor func) {
-  using Traits = phi::funcs::FunctionTraits<Functor>;
+  using Traits = funcs::FunctionTraits<Functor>;
   using ArgsT = typename Traits::ArgsTuple;
   ArgsT args[VecSize];
   ConditionalT<OutT, NumOuts> result[VecSize];
@@ -731,7 +776,7 @@ __global__ void VectorizedElementwiseKernel(
 }
 
 template <typename OutT, typename Functor, int Arity, int NumOuts, int VecSize>
-void LaunchElementwiseKernel(const KPDevice &ctx,
+void LaunchElementwiseKernel(const KPDevice &dev_ctx,
                              const std::vector<const DenseTensor *> &ins,
                              std::vector<DenseTensor *> *outs,
                              Functor func) {
@@ -742,7 +787,7 @@ void LaunchElementwiseKernel(const KPDevice &ctx,
   Array<const _ptr_ char *__restrict__, Arity> ins_data;
   Array<_ptr_ OutT *, NumOuts> outs_data;
 
-  using Traits = phi::funcs::FunctionTraits<Functor>;
+  using Traits = funcs::FunctionTraits<Functor>;
   using ArgsT = typename Traits::ArgsTuple;
   ArgsT arg;
   UnrollerWithoutVecSize<InputSetter, Arity>::step(ins, arg, &ins_data);
@@ -754,7 +799,7 @@ void LaunchElementwiseKernel(const KPDevice &ctx,
   int block_size = 64;
   int grid_size = 8;
   int read_lens = kps::details::GetXpuReadLens(numel, block_size, grid_size);
-  auto stream = ctx.x_context()->xpu_stream;
+  auto stream = dev_ctx.x_context()->xpu_stream;
   int64_t main_offset =
       (numel / (read_lens * block_size)) * read_lens * block_size;
   VectorizedElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSize>
@@ -762,10 +807,10 @@ void LaunchElementwiseKernel(const KPDevice &ctx,
           ins_data, outs_data, numel, main_offset, read_lens, func);
 #else
   auto gpu_config =
-      phi::backends::gpu::GetGpuLaunchConfig1D(ctx, numel, VecSize);
+      phi::backends::gpu::GetGpuLaunchConfig1D(dev_ctx, numel, VecSize);
   int64_t main_offset = (numel / (VecSize * gpu_config.GetBlockSize())) *
                         VecSize * gpu_config.GetBlockSize();
-  auto stream = ctx.stream();
+  auto stream = dev_ctx.stream();
   VectorizedElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSize>
       <<<gpu_config.block_per_grid, gpu_config.thread_per_block, 0, stream>>>(
           ins_data, outs_data, numel, main_offset, VecSize, func);
@@ -775,35 +820,44 @@ void LaunchElementwiseKernel(const KPDevice &ctx,
 template <typename OutT, typename Functor, int Arity, int NumOuts = 1>
 typename std::enable_if<!NeedVectorized<OutT>::value, void>::type
 ElementwiseKernelForDifferentVecSize(
-    const KPDevice &ctx,
+    const KPDevice &dev_ctx,
     const std::vector<const DenseTensor *> &ins,
     std::vector<DenseTensor *> *outs,
     Functor func) {
   LaunchElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSizeS>(
-      ctx, ins, outs, func);
+      dev_ctx, ins, outs, func);
 }
 
 template <typename OutT, typename Functor, int Arity, int NumOuts = 1>
 typename std::enable_if<NeedVectorized<OutT>::value, void>::type
 ElementwiseKernelForDifferentVecSize(
-    const KPDevice &ctx,
+    const KPDevice &dev_ctx,
     const std::vector<const DenseTensor *> &ins,
     std::vector<DenseTensor *> *outs,
     Functor func) {
+  static int capability = dev_ctx.GetComputeCapability();
+  // For Hopper and Blackwell, max vectorized size is 8.
+  static int max_vec_size = capability >= 90 ? VecSizeVL : VecSizeL;
   // calculate the max vec_size for all ins and outs
   int vec_size = GetVectorizedSizeForTensors(ins, *outs);
+  vec_size = std::min(vec_size, max_vec_size);
+
   switch (vec_size) {
+    case VecSizeVL:
+      LaunchElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSizeVL>(
+          dev_ctx, ins, outs, func);
+      break;
     case VecSizeL:
       LaunchElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSizeL>(
-          ctx, ins, outs, func);
+          dev_ctx, ins, outs, func);
       break;
     case VecSizeM:
       LaunchElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSizeM>(
-          ctx, ins, outs, func);
+          dev_ctx, ins, outs, func);
       break;
     case VecSizeS:
       LaunchElementwiseKernel<OutT, Functor, Arity, NumOuts, VecSizeS>(
-          ctx, ins, outs, func);
+          dev_ctx, ins, outs, func);
       break;
     default: {
       PADDLE_THROW(common::errors::Unimplemented(
@@ -814,11 +868,11 @@ ElementwiseKernelForDifferentVecSize(
 }
 
 template <typename OutT, typename Functor, int NumOuts = 1>
-void ElementwiseKernel(const KPDevice &ctx,
+void ElementwiseKernel(const KPDevice &dev_ctx,
                        const std::vector<const DenseTensor *> &ins,
                        std::vector<DenseTensor *> *outs,
                        Functor func) {
-  using Traits = phi::funcs::FunctionTraits<Functor>;
+  using Traits = funcs::FunctionTraits<Functor>;
   const int kArity = Traits::arity;
   PADDLE_ENFORCE_EQ(ins.size(),
                     kArity,
@@ -850,14 +904,14 @@ void ElementwiseKernel(const KPDevice &ctx,
               "but %dth output tensor`s shape is not.",
               i));
     }
-    ctx.template Alloc<OutT>((*outs)[i]);
+    dev_ctx.template Alloc<OutT>((*outs)[i]);
   }
   if (have_0_size) {
     return;
   }
 
   ElementwiseKernelForDifferentVecSize<OutT, Functor, kArity, NumOuts>(
-      ctx, ins, outs, func);
+      dev_ctx, ins, outs, func);
 }
 
 #endif

@@ -64,20 +64,48 @@ _PADDLE_DTYPE_2_NUMPY_DTYPE = {
     core.VarDesc.VarType.RAW: 'raw',
 }
 
-_NUMPY_DTYPE_2_PADDLE_DTYPE = {
-    'bool': core.VarDesc.VarType.BOOL,
-    'float16': core.VarDesc.VarType.FP16,
-    'uint16': core.VarDesc.VarType.BF16,
-    'float32': core.VarDesc.VarType.FP32,
-    'float64': core.VarDesc.VarType.FP64,
-    'int8': core.VarDesc.VarType.INT8,
-    'int16': core.VarDesc.VarType.INT16,
-    'int32': core.VarDesc.VarType.INT32,
-    'int64': core.VarDesc.VarType.INT64,
-    'uint8': core.VarDesc.VarType.UINT8,
-    'complex64': core.VarDesc.VarType.COMPLEX64,
-    'complex128': core.VarDesc.VarType.COMPLEX128,
-}
+_PADDLE_DTYPE = [
+    core.DataType.UINT8,
+    core.DataType.INT8,
+    core.DataType.INT16,
+    core.DataType.INT32,
+    core.DataType.INT64,
+    core.DataType.FLOAT16,
+    core.DataType.FLOAT32,
+    core.DataType.FLOAT64,
+    core.DataType.COMPLEX64,
+    core.DataType.COMPLEX128,
+    core.DataType.BOOL,
+    core.DataType.BFLOAT16,
+]
+u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf = _PADDLE_DTYPE
+
+_PROMOTE_MATRIX = [
+    # u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf
+    [u1, i2, i2, i4, i8, f2, f4, f8, c4, c8, u1, bf],  # u1
+    [i2, i1, i2, i4, i8, f2, f4, f8, c4, c8, i1, bf],  # i1
+    [i2, i2, i2, i4, i8, f2, f4, f8, c4, c8, i2, bf],  # i2
+    [i4, i4, i4, i4, i8, f2, f4, f8, c4, c8, i4, bf],  # i4
+    [i8, i8, i8, i8, i8, f2, f4, f8, c4, c8, i8, bf],  # i8
+    [f2, f2, f2, f2, f2, f2, f4, f8, c4, c8, f2, f4],  # f2
+    [f4, f4, f4, f4, f4, f4, f4, f8, c4, c8, f4, f4],  # f4
+    [f8, f8, f8, f8, f8, f8, f8, f8, c8, c8, f8, f8],  # f8
+    [c4, c4, c4, c4, c4, c4, c4, c8, c4, c8, c4, c4],  # c4
+    [c8, c8, c8, c8, c8, c8, c8, c8, c8, c8, c8, c8],  # c8
+    [u1, i1, i2, i4, i8, f2, f4, f8, c4, c8, b1, bf],  # b1
+    [bf, bf, bf, bf, bf, f4, f4, f8, c4, c8, bf, bf],  # bf
+]
+_TYPE_TO_IDX = {t: i for i, t in enumerate(_PADDLE_DTYPE)}
+
+
+def promote_types(type1, type2):
+    idx1 = _TYPE_TO_IDX.get(type1)
+    idx2 = _TYPE_TO_IDX.get(type2)
+
+    if idx1 is None or idx2 is None:
+        raise TypeError(f"Unsupported dtype: {type1} or {type2}")
+
+    return _PROMOTE_MATRIX[idx1][idx2]
 
 
 def convert_float_to_uint16(data, data_format="NCHW"):
@@ -119,6 +147,8 @@ def convert_dtype(dtype: DTypeLike) -> _DTypeLiteral:
             bool,
             np.float16,
             np.uint16,
+            np.uint32,
+            np.uint64,
             np.float32,
             np.float64,
             np.int8,
@@ -136,6 +166,8 @@ def convert_dtype(dtype: DTypeLike) -> _DTypeLiteral:
             'bool',
             'float16',
             'uint16',
+            'uint32',
+            'uint64',
             'float32',
             'float64',
             'int4',

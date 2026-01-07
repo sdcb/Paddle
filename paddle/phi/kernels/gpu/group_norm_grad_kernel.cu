@@ -181,27 +181,30 @@ __global__ void GetScaleBiasGradientCUDAKernel(int64_t N,
                                                const AccT* db,
                                                T* d_scale,
                                                T* d_bias) {
-  // TODO(guoxiangmin) :add check when C / block >= gridDim.x
-  const int64_t c = blockIdx.x * blockDim.x + threadIdx.x;
-  if (c < C) {
-    const int G = group;
-    const int64_t D = C / G;
-    AccT sum1 = static_cast<AccT>(0);
-    AccT sum2 = static_cast<AccT>(0);
-    for (int64_t n = 0; n < N; ++n) {
-      const int64_t nc = n * C + c;
-      const int64_t ng = n * G + c / D;
-      sum1 +=
-          (d_scale == nullptr)
-              ? AccT(0)
-              : ((ds[nc] - db[nc] * (mean[ng])) * (rsqrt((var[ng]) + epsilon)));
-      sum2 += (d_bias == nullptr) ? AccT(0) : db[nc];
-    }
-    if (d_scale != nullptr) {
-      d_scale[c] = static_cast<T>(sum1);
-    }
-    if (d_bias != nullptr) {
-      d_bias[c] = static_cast<T>(sum2);
+  for (int64_t c =
+           static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+           static_cast<int64_t>(threadIdx.x);
+       c < C;
+       c += gridDim.x * blockDim.x) {
+    if (c < C) {
+      const int G = group;
+      const int64_t D = C / G;
+      AccT sum1 = static_cast<AccT>(0);
+      AccT sum2 = static_cast<AccT>(0);
+      for (int64_t n = 0; n < N; ++n) {
+        const int64_t nc = n * C + c;
+        const int64_t ng = n * G + c / D;
+        sum1 += (d_scale == nullptr) ? AccT(0)
+                                     : ((ds[nc] - db[nc] * (mean[ng])) *
+                                        (rsqrt((var[ng]) + epsilon)));
+        sum2 += (d_bias == nullptr) ? AccT(0) : db[nc];
+      }
+      if (d_scale != nullptr) {
+        d_scale[c] = static_cast<T>(sum1);
+      }
+      if (d_bias != nullptr) {
+        d_bias[c] = static_cast<T>(sum2);
+      }
     }
   }
 }
@@ -328,18 +331,17 @@ void GroupNormGradKernel(const Context& dev_ctx,
 
   const auto& x_dims = x.dims();
   const int64_t C =
-      (data_layout == DataLayout::kNCHW ? x_dims[1]
-                                        : x_dims[x_dims.size() - 1]);
+      (data_layout == DataLayout::NCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
   const int64_t group_size = C / groups;
   const int64_t W =
-      (data_layout == DataLayout::kNCHW ? x_dims[x_dims.size() - 1]
-                                        : x_dims[x_dims.size() - 2]);
+      (data_layout == DataLayout::NCHW ? x_dims[x_dims.size() - 1]
+                                       : x_dims[x_dims.size() - 2]);
 
   if (d_x) {
     dev_ctx.template Alloc<T>(d_x);
   }
-  phi::funcs::SetConstant<GPUContext, T> set_zero;
-  phi::funcs::SetConstant<GPUContext, AccT> set_zero_AccT;
+  funcs::SetConstant<GPUContext, T> set_zero;
+  funcs::SetConstant<GPUContext, AccT> set_zero_AccT;
   DenseTensor ds, db;
   ds.Resize({x_dims[0], C});
   AccT* ds_data = dev_ctx.template Alloc<AccT>(&ds);
@@ -370,7 +372,7 @@ void GroupNormGradKernel(const Context& dev_ctx,
   if (bias_ptr) bias_data = bias_ptr->data<T>();
 
   int64_t imsize = 1;
-  if (data_layout == DataLayout::kNCHW) {
+  if (data_layout == DataLayout::NCHW) {
     for (int i = 2; i < x_dims.size(); ++i) {
       imsize *= x_dims[i];
     }
@@ -390,7 +392,7 @@ void GroupNormGradKernel(const Context& dev_ctx,
   dim3 threads(block_size, 1, 1);
   int flags =
       (scale_data != nullptr) * kHasScale + (bias_data != nullptr) * kHasBias;
-  if (data_layout == DataLayout::kNCHW) {
+  if (data_layout == DataLayout::NCHW) {
     const int max_num_threads = 1024;
     int max_block_size =
         std::min(imsize, static_cast<int64_t>(max_num_threads));
@@ -407,17 +409,19 @@ void GroupNormGradKernel(const Context& dev_ctx,
     if (d_scale || d_bias) {
       const int block = 256;
       GetScaleBiasGradientCUDAKernel<T, AccT>
-          <<<(C + block - 1) / block, block, 0, dev_ctx.stream()>>>(
-              x_dims[0],
-              C,
-              groups,
-              epsilon,
-              mean_data,
-              var_data,
-              ds_data,
-              db_data,
-              d_scale_data,
-              d_bias_data);
+          <<<std::min(max_grid_x, (C + block - 1) / block),
+             block,
+             0,
+             dev_ctx.stream()>>>(x_dims[0],
+                                 C,
+                                 groups,
+                                 epsilon,
+                                 mean_data,
+                                 var_data,
+                                 ds_data,
+                                 db_data,
+                                 d_scale_data,
+                                 d_bias_data);
     }
 
     if (d_x_data != nullptr) {
@@ -533,5 +537,5 @@ PD_REGISTER_KERNEL(group_norm_grad,
                    phi::GroupNormGradKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}

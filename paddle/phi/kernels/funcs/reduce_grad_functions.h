@@ -38,10 +38,10 @@ void ReduceGradFunctor(const Context& dev_ctx,
   auto x_dims = input0.dims();
   auto reduced_dims_v = common::vectorize(x_dims);
   std::vector<int> dims_ref = dims;
-  Eigen::array<int, D> broadcast_dim;
+  Eigen::array<int64_t, D> broadcast_dim;
   for (size_t i = 0; i < D; ++i) broadcast_dim[i] = 1;
 
-  int broad_cast_times = 1;
+  int64_t broad_cast_times = 1;
   for (size_t i = 0; i < dims_ref.size(); ++i) {
     if (dims_ref[i] < 0) {
       dims_ref[i] = x_rank + dims_ref[i];
@@ -120,7 +120,7 @@ void HandleLargeDimGrad(const Context& dev_ctx,
   phi::Copy(dev_ctx, *dx, dev_ctx.GetPlace(), false, &dx_tmp);
   dx_tmp.Resize(shuffled_dim);
   dx->Resize(x_dim);
-  phi::funcs::TransposeNormal<Context, T> trans;
+  funcs::TransposeNormal<Context, T> trans;
   trans(dev_ctx, dx_tmp, dx, origin_axis);
 }
 
@@ -135,14 +135,14 @@ void LaunchReduceGradKernel(const Context& dev_ctx,
                             const std::vector<int>& dims,
                             bool reduce_all = false) {
   if (reduce_all) {
-    auto x = phi::EigenVector<T>::Flatten(*input0);
-    auto x_reduce = phi::EigenVector<T>::Flatten(*input1);
-    auto x_reduce_grad = phi::EigenVector<T>::Flatten(*input2);
-    auto x_grad = phi::EigenVector<T>::Flatten(*output);
+    auto x = EigenVector<T>::Flatten(*input0);
+    auto x_reduce = EigenVector<T>::Flatten(*input1);
+    auto x_reduce_grad = EigenVector<T>::Flatten(*input2);
+    auto x_grad = EigenVector<T>::Flatten(*output);
     auto& place = *dev_ctx.eigen_device();
     // *dev_ctx.eigen_device();
     auto broadcast_dim =
-        Eigen::array<int, 1>({{static_cast<int>(input0->numel())}});
+        Eigen::array<int64_t, 1>({{static_cast<int64_t>(input0->numel())}});
     functor(place,
             &x,
             &x_reduce,

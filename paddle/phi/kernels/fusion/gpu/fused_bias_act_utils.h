@@ -42,12 +42,12 @@ template <typename T>
 struct GeluComputeType;
 
 template <>
-struct GeluComputeType<phi::dtype::bfloat16> {
+struct GeluComputeType<phi::bfloat16> {
   using Type = float;
 };
 
 template <>
-struct GeluComputeType<phi::dtype::float16> {
+struct GeluComputeType<phi::float16> {
   using Type = float;
 };
 
@@ -59,10 +59,10 @@ struct GeluComputeType<float> {
 template <typename T>
 using GeluType = typename GeluComputeType<T>::Type;
 
-using phi::funcs::DequantLoad;
-using phi::funcs::Load;
-using phi::funcs::QuantStore;
-using phi::funcs::Store;
+using funcs::DequantLoad;
+using funcs::Load;
+using funcs::QuantStore;
+using funcs::Store;
 
 template <typename T>
 struct BaseActivationFunctor {

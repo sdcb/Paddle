@@ -27,6 +27,10 @@ void ScatterNdAddKernel(const Context &dev_ctx,
                         const DenseTensor &index,
                         const DenseTensor &updates,
                         DenseTensor *out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // In place output: Out = X
   Copy(dev_ctx, x, dev_ctx.GetPlace(), true, out);
   const auto &index_type = index.dtype();
@@ -42,9 +46,9 @@ void ScatterNdAddKernel(const Context &dev_ctx,
                         phi::DataType::INT64));
 
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::ScatterNdAdd<T, int32_t>(dev_ctx, updates, index, out);
+    funcs::ScatterNdAdd<T, int32_t>(dev_ctx, updates, index, out);
   } else {
-    phi::funcs::ScatterNdAdd<T, int64_t>(dev_ctx, updates, index, out);
+    funcs::ScatterNdAdd<T, int64_t>(dev_ctx, updates, index, out);
   }
 }
 

@@ -24,8 +24,8 @@
 namespace phi {
 
 using common::vectorize;
-using phi::funcs::OneDNNGetDataType;
-using phi::funcs::OneDNNMemDesc;
+using funcs::OneDNNGetDataType;
+using funcs::OneDNNMemDesc;
 using Direction = dnnl::rnn_direction;
 using OneDNNMemoryFormat = dnnl::memory::format_tag;
 
@@ -56,7 +56,7 @@ class MultiGRUHandler {
                   const std::string& gate_activation,
                   int layers,
                   bool origin_mode,
-                  const std::string& mkldnn_data_type,
+                  const std::string& onednn_data_type,
                   float scale_data,
                   float shift_data,
                   bool force_fp32_output,
@@ -120,9 +120,9 @@ class MultiGRUHandler {
     const std::string unique_name = dev_ctx.GetOutputsName("Hidden")[0];
     // Create memory key without Ti because weights, bias and h0 memories
     // do not depend on Ti size but primitive and input/output memory do
-    memory_key_ = phi::funcs::ExtendKeyWithThreadInfoIfNeeded(
+    memory_key_ = funcs::ExtendKeyWithThreadInfoIfNeeded(
         dev_ctx,
-        phi::funcs::CreateKey(dev_ctx, unique_name, OneDNNGetDataType<T>()));
+        funcs::CreateKey(dev_ctx, unique_name, OneDNNGetDataType<T>()));
     key_ = memory_key_;
     key_.append("T").append(std::to_string(Ti_));
 
@@ -255,7 +255,7 @@ class MultiGRUHandler {
       dev_ctx_.SetBlob(key, memory_p);
     }
 
-    auto* x_data = phi::funcs::to_void_cast(x_->data<T>());
+    auto* x_data = funcs::to_void_cast(x_->data<T>());
 
     auto* x_onednn_data = memory_p->get_data_handle();
     memset(x_onednn_data, 0, sizeof(T) * N_ * Ti_ * ICs[0]);
@@ -604,7 +604,7 @@ class MultiGRUHandler {
   void reorderOutput(std::shared_ptr<dnnl::memory> mem, int layer UNUSED) {
     auto* data = mem->get_data_handle();
     auto tmp = dev_ctx_.Alloc<Tout>(hidden_);
-    auto* hidden_data = phi::funcs::to_void_cast(tmp);
+    auto* hidden_data = funcs::to_void_cast(tmp);
 
     if (isNTC(gru_pds_[{layers_ - 1, L2R}]->dst_desc())) {
       reorderNTCtoPP(data, hidden_data, layers_ - 1);
@@ -675,11 +675,11 @@ class MultiGRUHandler {
   // on Ti size, thus we need another key to cache them
   std::string memory_key_;
 
-  const phi::DenseTensor* x_;
-  const std::vector<const phi::DenseTensor*> weights_x_;
-  const std::vector<const phi::DenseTensor*> weights_h_;
-  const std::vector<const phi::DenseTensor*> biases_;
-  phi::DenseTensor* hidden_;
+  const DenseTensor* x_;
+  const std::vector<const DenseTensor*> weights_x_;
+  const std::vector<const DenseTensor*> weights_h_;
+  const std::vector<const DenseTensor*> biases_;
+  DenseTensor* hidden_;
   std::vector<dnnl::primitive_attr> attrs_;
   const phi::Vector<size_t>& x_lod_;
 };
@@ -695,7 +695,7 @@ void RunKernel(const Context& dev_ctx,
                const std::string& gate_activation,
                int layers_in,
                bool origin_mode,
-               const std::string& mkldnn_data_type,
+               const std::string& onednn_data_type,
                float scale_data,
                float shift_data,
                bool force_fp32_output,
@@ -710,7 +710,7 @@ void RunKernel(const Context& dev_ctx,
                                    gate_activation,
                                    layers_in,
                                    origin_mode,
-                                   mkldnn_data_type,
+                                   onednn_data_type,
                                    scale_data,
                                    shift_data,
                                    force_fp32_output,
@@ -732,7 +732,7 @@ void RunKernel(const Context& dev_ctx,
 }
 
 template <typename T, typename Context>
-void MultiGRUMKLDNNKernel(
+void MultiGRUONEDNNKernel(
     const Context& dev_ctx,
     const DenseTensor& x,
     const std::vector<const DenseTensor*>& weight_x,
@@ -743,7 +743,7 @@ void MultiGRUMKLDNNKernel(
     const std::string& gate_activation,
     int layers,
     bool origin_mode,
-    const std::string& mkldnn_data_type,
+    const std::string& onednn_data_type,
     float scale_data,
     float shift_data,
     bool force_fp32_output,
@@ -769,7 +769,7 @@ void MultiGRUMKLDNNKernel(
                                  gate_activation,
                                  layers,
                                  origin_mode,
-                                 mkldnn_data_type,
+                                 onednn_data_type,
                                  scale_data,
                                  shift_data,
                                  force_fp32_output,
@@ -785,7 +785,7 @@ void MultiGRUMKLDNNKernel(
                              gate_activation,
                              layers,
                              origin_mode,
-                             mkldnn_data_type,
+                             onednn_data_type,
                              scale_data,
                              shift_data,
                              force_fp32_output,
@@ -795,4 +795,4 @@ void MultiGRUMKLDNNKernel(
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    multi_gru, OneDNN, ONEDNN, phi::MultiGRUMKLDNNKernel, float, uint8_t) {}
+    multi_gru, OneDNN, ONEDNN, phi::MultiGRUONEDNNKernel, float, uint8_t) {}

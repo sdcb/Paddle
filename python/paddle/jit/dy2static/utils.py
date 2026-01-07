@@ -29,6 +29,7 @@ import textwrap
 import time
 import types
 import warnings
+from abc import ABC
 from contextlib import contextmanager
 from dataclasses import fields, is_dataclass
 from enum import Enum, Flag, IntEnum, auto
@@ -40,13 +41,18 @@ import numpy as np
 import paddle
 from paddle.base import backward, core, framework, unique_name
 from paddle.base.data_feeder import convert_dtype
+from paddle.base.dygraph.base import (
+    to_static_mode_guard,
+)
 from paddle.base.layer_helper import LayerHelper
 from paddle.base.wrapped_decorator import signature_safe_contextmanager
 from paddle.framework import CUDAPinnedPlace
 from paddle.jit.utils import OrderedSet
+from paddle.pir.core import _convert_into_value, static_op_arg_cast_guard
 from paddle.utils import flatten, gast
 from paddle.utils.environments import (
     BooleanEnvironmentVariable,
+    IntegerEnvironmentVariable,
 )
 
 from .ast_utils import ast_to_source_code
@@ -82,6 +88,7 @@ NO_SHAPE_VAR_TYPE = [
     core.VarDesc.VarType.FETCH_LIST,
 ]
 
+ENV_SOT_EVENT_LEVEL = IntegerEnvironmentVariable("SOT_EVENT_LEVEL", 0)
 ENV_ENABLE_SOT = BooleanEnvironmentVariable("ENABLE_FALL_BACK", True)
 ENV_ENABLE_CINN_IN_DY2ST = BooleanEnvironmentVariable(
     "ENABLE_CINN_IN_DY2ST", True
@@ -127,7 +134,6 @@ class CUDAGraphState(IntEnum):
 
 
 class TransformOptions:
-
     class ToStaticMode(Flag):
         SOT = auto()
         AST = auto()
@@ -138,8 +144,24 @@ class TransformOptions:
 
     TRANSFORM_OPTIONS_ATTR_NAME = "___jit_transform_options___"
 
-    def __init__(self, skip_transform_mode: ToStaticMode = ToStaticMode.Nil()):
+    def __init__(
+        self,
+        skip_transform_mode: ToStaticMode = ToStaticMode.Nil(),
+        need_capture_control_flow: bool = False,
+    ):
         self.skip_transform_mode = skip_transform_mode
+        self._need_capture_control_flow = need_capture_control_flow
+
+    # Builder pattern methods
+    def with_skip_transform_mode(self, skip_transform_mode: ToStaticMode):
+        self.skip_transform_mode |= skip_transform_mode
+        return self
+
+    def with_need_capture_control_flow(
+        self, need_capture_control_flow: bool = True
+    ):
+        self._need_capture_control_flow = need_capture_control_flow
+        return self
 
     def attach(self, fn):
         if inspect.ismethod(fn):
@@ -155,6 +177,9 @@ class TransformOptions:
     def need_transform(self, mode: ToStaticMode):
         return not (self.skip_transform_mode & mode)
 
+    def need_capture_control_flow(self):
+        return self._need_capture_control_flow
+
     @staticmethod
     def check_fn_need_transform(fn, mode: ToStaticMode):
         if not hasattr(fn, TransformOptions.TRANSFORM_OPTIONS_ATTR_NAME):
@@ -162,6 +187,14 @@ class TransformOptions:
         return getattr(
             fn, TransformOptions.TRANSFORM_OPTIONS_ATTR_NAME
         ).need_transform(mode)
+
+    @staticmethod
+    def check_fn_need_capture_control_flow(fn):
+        if not hasattr(fn, TransformOptions.TRANSFORM_OPTIONS_ATTR_NAME):
+            return False
+        return getattr(
+            fn, TransformOptions.TRANSFORM_OPTIONS_ATTR_NAME
+        ).need_capture_control_flow()
 
 
 class TimeCounter:
@@ -309,7 +342,18 @@ def is_dataclass_type(obj):
 
 
 def is_plain_dataclass_type(cls: type):
-    return is_dataclass_type(cls) and len(cls.__mro__) == 2
+    """
+    Returns True if `cls` and all its non-ABC, non-object base classes are dataclasses.
+    Disallows inheritance from any non-dataclass types except for ABC and object.
+    """
+    if not is_dataclass_type(cls):
+        return False
+    for base_cls in cls.__mro__[-2 : -len(cls.__mro__) - 1 : -1]:
+        if base_cls is ABC:
+            continue
+        if not is_dataclass_type(base_cls):
+            return False
+    return True
 
 
 def dataclass_as_dict(obj):
@@ -351,7 +395,13 @@ def make_hashable(x, error_msg=None):
             # means different value will lead to different hash code.
             return hash(x.tostring())
         elif isinstance(x, dict):
-            return tuple(map(make_hashable, x.values()))
+            # dict is order-insensitive
+            return tuple(
+                (make_hashable(k), make_hashable(v))
+                for k, v in sorted(
+                    x.items(), key=lambda kv: make_hashable(kv[0])
+                )
+            )
 
         error_msg = error_msg or "Requires a hashable object."
         raise ValueError(f"{error_msg} But received type: {type_name(x)}")
@@ -432,16 +482,18 @@ def wrap_as_closure(tree: gast.AST, closure_vars: list[str]) -> gast.AST:
 
     Before:
 
-        >>> def fn(x):
-        ...     ...
+        >>> def fn(x): ...
 
     After:
 
         >>> def create_fn():
         ...     closure_var_1 = None
-        ...     def fn(x):
-        ...         ...
+        ...
+        ...     def fn(x): ...
+        ...
         ...     return fn
+        ...
+        ...
         ... fn = create_fn()
     """
 
@@ -626,6 +678,7 @@ def ast_to_func(ast_root, dyfunc, delete_on_exit=True):
         argdefs=callable_func.__defaults__,
         closure=get_new_closure(dyfunc, callable_func),
     )
+    new_fn.__kwdefaults__ = callable_func.__kwdefaults__
 
     return new_fn, f.name
 
@@ -777,9 +830,9 @@ class GetterSetterHelper:
         if vars is None:
             return ()
         for n in names:
-            assert (
-                n in self.name2id
-            ), f"the name `{n}` not in name union set`{self.name2id.keys()}`."
+            assert n in self.name2id, (
+                f"the name `{n}` not in name union set`{self.name2id.keys()}`."
+            )
         return tuple(vars[self.name2id[n]] for n in names)
 
     def set(self, names, values):
@@ -791,9 +844,9 @@ class GetterSetterHelper:
         if vars is None:
             return
         for n in names:
-            assert (
-                n in self.name2id
-            ), f"the name `{n}` not in name union set`{self.name2id.keys()}`."
+            assert n in self.name2id, (
+                f"the name `{n}` not in name union set`{self.name2id.keys()}`."
+            )
         vars = list(vars)
         indices = [self.name2id[n] for n in names]
         for i, v in zip(indices, values):
@@ -854,6 +907,23 @@ def use_specialized_device():
     return paddle.get_flags(["FLAGS_specialize_device_in_dy2st"])[
         "FLAGS_specialize_device_in_dy2st"
     ]
+
+
+def maybe_dynamic_shape_tensor(tensor: paddle.Tensor) -> bool:
+    if not tensor.place.is_cpu_place():
+        return False
+    if tensor.dtype not in [
+        paddle.int32,
+        paddle.int64,
+    ]:
+        return False  # Only int tensor can be shape tensor
+    if len(tensor.shape) == 0:
+        return True  # For full generated scalar tensor
+    if len(tensor.shape) > 1:
+        return False
+    if tensor.shape[0] < 10:
+        return True  # For full_int_array generated small 1-D tensor
+    return False
 
 
 def parameters_persistent_mode_is_enabled():
@@ -1035,7 +1105,7 @@ def patch_method_guard(
 
 def extract_tensor_dynamic_dims(
     tensor: paddle.Tensor,
-) -> tuple[int]:
+) -> tuple[int, ...]:
     """
     Extract dynamic dimensions from a paddle.Tensor.
     Returns a list of dynamic dimensions or None if no dynamic dimensions exist.
@@ -1046,7 +1116,7 @@ def extract_tensor_dynamic_dims(
         )
 
     if not hasattr(tensor, DYNAMIC_DIMS_ATTR_NAME):
-        return []
+        return ()
 
     dynamic_dims = getattr(tensor, DYNAMIC_DIMS_ATTR_NAME)
     if not isinstance(dynamic_dims, tuple):
@@ -1054,3 +1124,40 @@ def extract_tensor_dynamic_dims(
             f"Expected {DYNAMIC_DIMS_ATTR_NAME} to be a tuple, but got {type(dynamic_dims).__name__}"
         )
     return dynamic_dims
+
+
+class GraphTracingContext:
+    params_with_values: tuple[list[paddle.Tensor], list[paddle.Tensor]] | None
+
+    def __init__(self):
+        self.params_with_values = None
+
+    def set_params_with_values(
+        self,
+        params_with_values: tuple[list[paddle.Tensor], list[paddle.Tensor]],
+    ):
+        self.params_with_values = params_with_values
+
+    def get_params_with_values(
+        self,
+    ) -> tuple[list[paddle.Tensor], list[paddle.Tensor]]:
+        assert self.params_with_values is not None
+        return self.params_with_values
+
+
+@contextmanager
+def graph_tracing_guard(main_program: paddle.static.Program):
+    ctx = GraphTracingContext()
+    with (
+        to_static_mode_guard(is_to_static=True),
+        static_op_arg_cast_guard(_convert_into_value),
+    ):
+        yield ctx
+
+        from ..dy2static.parameter_recorder import (
+            _global_inplace_map,
+            _global_parameter_recorder,
+        )
+
+        ctx.set_params_with_values(_global_parameter_recorder.pop(main_program))
+        _global_inplace_map.pop(main_program)

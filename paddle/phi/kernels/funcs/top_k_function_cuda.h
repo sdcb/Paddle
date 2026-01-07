@@ -26,8 +26,6 @@ limitations under the License. */
 #include "paddle/phi/backends/gpu/gpu_device_function.h"
 #include "paddle/phi/backends/gpu/gpu_launch_config.h"
 #include "paddle/phi/backends/gpu/gpu_primitives.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
 #include "paddle/phi/kernels/primitive/functor_primitives.h"
@@ -52,20 +50,19 @@ inline static size_t round_up(size_t n, size_t q) {
 namespace rocprim {
 namespace detail {
 template <>
-struct radix_key_codec_base<phi::dtype::float16>
-    : radix_key_codec_integral<phi::dtype::float16, uint16_t> {};
+struct radix_key_codec_base<phi::float16>
+    : radix_key_codec_integral<phi::float16, uint16_t> {};
 
 template <>
-struct radix_key_codec_base<phi::dtype::bfloat16>
-    : radix_key_codec_integral<phi::dtype::bfloat16, uint16_t> {};
+struct radix_key_codec_base<phi::bfloat16>
+    : radix_key_codec_integral<phi::bfloat16, uint16_t> {};
 
 #if HIP_VERSION >= 50400000
 template <>
-struct float_bit_mask<phi::dtype::float16> : float_bit_mask<rocprim::half> {};
+struct float_bit_mask<phi::float16> : float_bit_mask<rocprim::half> {};
 
 template <>
-struct float_bit_mask<phi::dtype::bfloat16>
-    : float_bit_mask<rocprim::bfloat16> {};
+struct float_bit_mask<phi::bfloat16> : float_bit_mask<rocprim::bfloat16> {};
 #endif
 }  // namespace detail
 }  // namespace rocprim
@@ -74,13 +71,12 @@ namespace cub = hipcub;
 // set cub base traits in order to handle float16
 namespace cub {
 template <>
-struct NumericTraits<phi::dtype::float16>
-    : BaseTraits<FLOATING_POINT, true, false, uint16_t, phi::dtype::float16> {};
+struct NumericTraits<phi::float16>
+    : BaseTraits<FLOATING_POINT, true, false, uint16_t, phi::float16> {};
 
 template <>
-struct NumericTraits<phi::dtype::bfloat16>
-    : BaseTraits<FLOATING_POINT, true, false, uint16_t, phi::dtype::bfloat16> {
-};
+struct NumericTraits<phi::bfloat16>
+    : BaseTraits<FLOATING_POINT, true, false, uint16_t, phi::bfloat16> {};
 
 }  // namespace cub
 #endif
@@ -88,10 +84,10 @@ struct NumericTraits<phi::dtype::bfloat16>
 namespace phi {
 namespace funcs {
 
-using Tensor = phi::DenseTensor;
+using Tensor = DenseTensor;
 
 inline void GetDims(
-    const phi::DDim& dim, int axis, int64_t* pre, int64_t* n, int64_t* post) {
+    const DDim& dim, int axis, int64_t* pre, int64_t* n, int64_t* post) {
   *pre = 1;
   *post = 1;
   *n = dim[axis];
@@ -404,8 +400,8 @@ __device__ __forceinline__ void BlockReduce(Pair<T> shared_max[],
  * In a block:
  * 1. every thread get top MaxLength value;
  * 2. merge to sh_topk, block reduce and get max value;
- * 3. go to the second setp, until one thread's topk value is null;
- * 4. go to the first setp, until get the topk value.
+ * 3. go to the second step, until one thread's topk value is null;
+ * 4. go to the first step, until get the topk value.
  */
 
 template <typename T, int MaxLength, int BlockSize>
@@ -584,10 +580,10 @@ struct RadixTypeConfig<int64_t> {
 };
 
 template <>
-struct RadixTypeConfig<phi::dtype::float16> {
+struct RadixTypeConfig<phi::float16> {
   typedef uint32_t RadixType;
 
-  static inline __device__ RadixType Convert(phi::dtype::float16 v) {
+  static inline __device__ RadixType Convert(phi::float16 v) {
 #if CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__)
     half v_h = v.to_half();
     RadixType x = __half_as_ushort(v_h);
@@ -599,30 +595,30 @@ struct RadixTypeConfig<phi::dtype::float16> {
 #endif
   }
 
-  static inline __device__ phi::dtype::float16 Deconvert(RadixType v) {
+  static inline __device__ phi::float16 Deconvert(RadixType v) {
 #if CUDA_ARCH_FP16_SUPPORTED(__CUDA_ARCH__)
     RadixType mask = (v & 0x00008000) ? 0x00008000 : 0x0000ffff;
-    return static_cast<phi::dtype::float16>(__ushort_as_half(v ^ mask));
+    return static_cast<phi::float16>(__ushort_as_half(v ^ mask));
 #else
     assert(false);
-    return static_cast<phi::dtype::float16>(0);
+    return static_cast<phi::float16>(0);
 #endif
   }
 };
 
 template <>
-struct RadixTypeConfig<phi::dtype::bfloat16> {
+struct RadixTypeConfig<phi::bfloat16> {
   typedef uint32_t RadixType;
 
-  static inline __device__ RadixType Convert(phi::dtype::bfloat16 v) {
+  static inline __device__ RadixType Convert(phi::bfloat16 v) {
     RadixType x = v.x;
     RadixType mask = (x & 0x00008000) ? 0x0000ffff : 0x00008000;
     return (v == v) ? (x ^ mask) : 0xffff;
   }
 
-  static inline __device__ phi::dtype::bfloat16 Deconvert(RadixType v) {
+  static inline __device__ phi::bfloat16 Deconvert(RadixType v) {
     RadixType mask = (v & 0x00008000) ? 0x00008000 : 0x0000ffff;
-    phi::dtype::bfloat16 r;
+    phi::bfloat16 r;
     r.x = (v ^ mask);
     return r;
   }
@@ -879,7 +875,10 @@ __global__ void GatherKthValue(const T* input,
   void* shared_mem = static_cast<void*>(shared_mem_char);
 
   IndexType row =
-      blockIdx.z * gridDim.y * gridDim.x + blockIdx.y * gridDim.x + blockIdx.x;
+      static_cast<IndexType>(blockIdx.z) * static_cast<IndexType>(gridDim.y) *
+          static_cast<IndexType>(gridDim.x) +
+      static_cast<IndexType>(blockIdx.y) * static_cast<IndexType>(gridDim.x) +
+      static_cast<IndexType>(blockIdx.x);
   if (row >= num_rows) return;
   const T* cur_input = input + row * num_cols;
 
@@ -1081,12 +1080,12 @@ __global__ void AssignGradWithAxis(const T* grad_out,
 // use the radix sort for the topk
 template <typename T>
 bool SortTopk(const phi::GPUContext& dev_ctx,
-              const phi::DenseTensor* input_tensor,
+              const DenseTensor* input_tensor,
               const int64_t num_cols,
               const int64_t num_rows,
               const int k,
-              phi::DenseTensor* out_tensor,
-              phi::DenseTensor* indices_tensor,
+              DenseTensor* out_tensor,
+              DenseTensor* indices_tensor,
               bool largest = true) {
   auto cu_stream = dev_ctx.stream();
 
@@ -1309,9 +1308,9 @@ bool SortTopk(const phi::GPUContext& dev_ctx,
     auto e_tmp_values =
         phi::EigenMatrix<T>::From(static_cast<const Tensor>(temp_values));
 
-    phi::funcs::EigenSlice<std::decay_t<decltype(dev)>, int64_t, 2>::Eval(
+    funcs::EigenSlice<std::decay_t<decltype(dev)>, int64_t, 2>::Eval(
         dev, e_indices, e_tmp_indices, slice_indices, slice_sizes);
-    phi::funcs::EigenSlice<std::decay_t<decltype(dev)>, T, 2>::Eval(
+    funcs::EigenSlice<std::decay_t<decltype(dev)>, T, 2>::Eval(
         dev, e_values, e_tmp_values, slice_indices, slice_sizes);
   }
   return true;

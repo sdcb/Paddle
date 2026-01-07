@@ -21,17 +21,17 @@ namespace funcs {
 
 template <class T>
 struct LstmUnitFunctor<phi::GPUContext, T> {
-  static void compute(const phi::GPUContext& context,
+  static void compute(const phi::GPUContext& dev_ctx,
                       LstmMetaValue<T> value,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType& gate_act,
-                      const phi::funcs::detail::ActivationType& cell_act,
-                      const phi::funcs::detail::ActivationType& cand_act,
+                      const funcs::detail::ActivationType& gate_act,
+                      const funcs::detail::ActivationType& cell_act,
+                      const funcs::detail::ActivationType& cand_act,
                       bool old_api_version = true) {
-    detail::gpu_lstm_forward<T>(context,
-                                phi::funcs::detail::forward::lstm<T>(),
+    detail::gpu_lstm_forward<T>(dev_ctx,
+                                funcs::detail::forward::lstm<T>(),
                                 value,
                                 frame_size,
                                 batch_size,
@@ -44,18 +44,18 @@ struct LstmUnitFunctor<phi::GPUContext, T> {
 
 template <class T>
 struct LstmUnitGradFunctor<phi::GPUContext, T> {
-  static void compute(const phi::GPUContext& context,
+  static void compute(const phi::GPUContext& dev_ctx,
                       LstmMetaValue<T> value,
                       LstmMetaGrad<T> grad,
                       int frame_size,
                       int batch_size,
                       T cell_clip,
-                      const phi::funcs::detail::ActivationType& gate_act,
-                      const phi::funcs::detail::ActivationType& cell_act,
-                      const phi::funcs::detail::ActivationType& cand_act,
+                      const funcs::detail::ActivationType& gate_act,
+                      const funcs::detail::ActivationType& cell_act,
+                      const funcs::detail::ActivationType& cand_act,
                       bool old_api_version = true) {
-    detail::gpu_lstm_backward(context,
-                              phi::funcs::detail::backward::lstm<T>(),
+    detail::gpu_lstm_backward(dev_ctx,
+                              funcs::detail::backward::lstm<T>(),
                               value,
                               grad,
                               frame_size,

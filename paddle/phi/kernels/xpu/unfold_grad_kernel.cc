@@ -31,6 +31,9 @@ void UnfoldGradKernel(const Context& dev_ctx,
                       DenseTensor* x_grad) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   dev_ctx.template Alloc<T>(x_grad);
+  if (x_grad->numel() == 0) {
+    return;
+  }
   const std::string data_format = common::DataLayoutToString(x.layout());
   bool is_nchw = data_format == "NCHW";
   PADDLE_ENFORCE_EQ(is_nchw,
@@ -48,18 +51,18 @@ void UnfoldGradKernel(const Context& dev_ctx,
   std::vector<int64_t> paddings(paddings_.begin(), paddings_.end());
   std::vector<int64_t> dilations(dilations_.begin(), dilations_.end());
 
-  int64_t out_height = phi::funcs::CalcOutputSize(x_dims[2],
-                                                  kernel_sizes[0],
-                                                  dilations[0],
-                                                  paddings[0],
-                                                  paddings[2],
-                                                  strides[0]);
-  int64_t out_width = phi::funcs::CalcOutputSize(x_dims[3],
-                                                 kernel_sizes[1],
-                                                 dilations[1],
-                                                 paddings[1],
-                                                 paddings[3],
-                                                 strides[1]);
+  int64_t out_height = funcs::CalcOutputSize(x_dims[2],
+                                             kernel_sizes[0],
+                                             dilations[0],
+                                             paddings[0],
+                                             paddings[2],
+                                             strides[0]);
+  int64_t out_width = funcs::CalcOutputSize(x_dims[3],
+                                            kernel_sizes[1],
+                                            dilations[1],
+                                            paddings[1],
+                                            paddings[3],
+                                            strides[1]);
 
   xpu::ctx_guard RAII_GUARD(dev_ctx.x_context());
   XPUType* out_grad_trans =
@@ -90,9 +93,5 @@ void UnfoldGradKernel(const Context& dev_ctx,
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(unfold_grad,
-                   XPU,
-                   ALL_LAYOUT,
-                   phi::UnfoldGradKernel,
-                   float,
-                   phi::dtype::float16) {}
+PD_REGISTER_KERNEL(
+    unfold_grad, XPU, ALL_LAYOUT, phi::UnfoldGradKernel, float, phi::float16) {}

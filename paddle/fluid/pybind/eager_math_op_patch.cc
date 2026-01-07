@@ -56,11 +56,7 @@ using egr::InputsContainDistTensor;
 namespace paddle::pybind {
 
 static bool PyCheckInteger(PyObject* obj) {
-#if PY_VERSION_HEX < 0x03000000
-  return (PyLong_Check(obj) || PyInt_Check(obj)) && !PyBool_Check(obj);
-#else
   return PyLong_Check(obj) && !PyBool_Check(obj);
-#endif
 }
 
 static bool IsNumpyType(PyObject* obj) {
@@ -92,14 +88,14 @@ void InitTensorWithNumpyValue(const py::object& array,
   phi::DenseTensor* impl_ptr =
       static_cast<phi::DenseTensor*>(self->impl().get());
   if (phi::is_cpu_place(place)) {
-    SetTensorFromPyArray<phi::CPUPlace>(impl_ptr, array, place, zero_copy);
+    SetTensorFromPyArray<CPUPlace>(impl_ptr, array, place, zero_copy);
   } else if (phi::is_xpu_place(place)) {
     SetTensorFromPyArray<phi::XPUPlace>(impl_ptr, array, place, zero_copy);
   } else if (phi::is_xpu_pinned_place(place)) {
     SetTensorFromPyArray<phi::XPUPinnedPlace>(
         impl_ptr, array, place, zero_copy);
   } else if (phi::is_gpu_place(place)) {
-    SetTensorFromPyArray<phi::GPUPlace>(impl_ptr, array, place, zero_copy);
+    SetTensorFromPyArray<GPUPlace>(impl_ptr, array, place, zero_copy);
   } else if (phi::is_cuda_pinned_place(place)) {
     SetTensorFromPyArray<phi::GPUPinnedPlace>(
         impl_ptr, array, place, zero_copy);
@@ -190,7 +186,21 @@ paddle::Tensor CallScalarFunction(const paddle::Tensor& self_tensor,
   } else if (op_type == "mul") {
     ret = scale_ad_func(self_tensor, phi::Scalar(other), 0.0, true);
   } else if (op_type == "div") {
-    ret = scale_ad_func(self_tensor, phi::Scalar(1.0 / other), 0.0, true);
+    auto MPType = (self_tensor.dtype() == phi::DataType::FLOAT16 ||
+                   self_tensor.dtype() == phi::DataType::BFLOAT16 ||
+                   self_tensor.dtype() == phi::DataType::FLOAT8_E5M2 ||
+                   self_tensor.dtype() == phi::DataType::FLOAT8_E4M3FN)
+                      ? phi::DataType::FLOAT32
+                      : self_tensor.dtype();
+    PD_VISIT_BOOL_AND_FLOATING_AND_INTEGRAL_AND_COMPLEX_TYPES(
+        MPType, "CallScalarFunction", ([&] {
+          ret = scale_ad_func(
+              self_tensor,
+              phi::Scalar(static_cast<data_t>(static_cast<data_t>(1.0) /
+                                              static_cast<data_t>(other))),
+              0.0,
+              true);
+        }));
   } else if (op_type == "pow") {
     ret = pow_ad_func(self_tensor, other);
   }
@@ -305,8 +315,23 @@ static PyObject* tensor__add__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__add__", 0);
+      paddle::experimental::Scalar value;
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__add__", 0);
+      } catch (...) {
+        PyObject* radd = PyObject_GetAttrString(other_obj, "__radd__");
+        if (radd) {
+          bool has_callable_radd = PyCallable_Check(radd);
+          Py_DECREF(radd);
+          if (has_callable_radd) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       {
         eager_gil_scoped_release guard;
         other_tensor = full_ad_func(self_tensor.shape(),
@@ -331,11 +356,7 @@ static PyObject* tensor__add__method(TensorObject* self,
 
   return ToPyObject(ret);
 
-#if defined(PADDLE_WITH_XPU_BKCL)
   EAGER_CATCH_AND_THROW_RETURN_NULL
-#else
-  EAGER_CATCH_AND_THROW_RETURN_NOT_IMPLEMENTED
-#endif
 }
 
 static PyObject* tensor__sub__method(TensorObject* self,
@@ -407,8 +428,23 @@ static PyObject* tensor__sub__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__sub__", 0);
+      paddle::experimental::Scalar value;
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__sub__", 0);
+      } catch (...) {
+        PyObject* rsub = PyObject_GetAttrString(other_obj, "__rsub__");
+        if (rsub) {
+          bool has_callable_rsub = PyCallable_Check(rsub);
+          Py_DECREF(rsub);
+          if (has_callable_rsub) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       {
         eager_gil_scoped_release guard;
         other_tensor = full_ad_func(self_tensor.shape(),
@@ -600,8 +636,24 @@ static PyObject* tensor__mul__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__mul__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__mul__", 0);
+      } catch (...) {
+        PyObject* rmul = PyObject_GetAttrString(other_obj, "__rmul__");
+        if (rmul) {
+          bool has_callable_rmul = PyCallable_Check(rmul);
+          Py_DECREF(rmul);
+          if (has_callable_rmul) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor = full_ad_func(self_tensor.shape(),
@@ -631,11 +683,7 @@ static PyObject* tensor__mul__method(TensorObject* self,
 
   return ToPyObject(ret);
 
-#if defined(PADDLE_WITH_XPU_BKCL)
   EAGER_CATCH_AND_THROW_RETURN_NULL
-#else
-  EAGER_CATCH_AND_THROW_RETURN_NOT_IMPLEMENTED
-#endif
 }
 
 static PyObject* tensor__div__method(TensorObject* self,
@@ -702,8 +750,24 @@ static PyObject* tensor__div__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__div__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__div__", 0);
+      } catch (...) {
+        PyObject* rdiv = PyObject_GetAttrString(other_obj, "__rdiv__");
+        if (rdiv) {
+          bool has_callable_rdiv = PyCallable_Check(rdiv);
+          Py_DECREF(rdiv);
+          if (has_callable_rdiv) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -1070,8 +1134,24 @@ static PyObject* tensor__mod__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__mod__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__mod__", 0);
+      } catch (...) {
+        PyObject* rmod = PyObject_GetAttrString(other_obj, "__rmod__");
+        if (rmod) {
+          bool has_callable_rmod = PyCallable_Check(rmod);
+          Py_DECREF(rmod);
+          if (has_callable_rmod) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -1261,8 +1341,24 @@ static PyObject* tensor__matmul__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__matmul__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__matmul__", 0);
+      } catch (...) {
+        PyObject* rmatmul = PyObject_GetAttrString(other_obj, "__rmatmul__");
+        if (rmatmul) {
+          bool has_callable_rmatmul = PyCallable_Check(rmatmul);
+          Py_DECREF(rmatmul);
+          if (has_callable_rmatmul) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -1696,8 +1792,25 @@ static PyObject* tensor__floordiv__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__floordiv__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__floordiv__", 0);
+      } catch (...) {
+        PyObject* rfloordiv =
+            PyObject_GetAttrString(other_obj, "__rfloordiv__");
+        if (rfloordiv) {
+          bool has_callable_rfloordiv = PyCallable_Check(rfloordiv);
+          Py_DECREF(rfloordiv);
+          if (has_callable_rfloordiv) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -1885,8 +1998,24 @@ static PyObject* tensor__pow__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__pow__", 0);
+      paddle::experimental::Scalar value;
+
+      // NOTE: call reflected method of other_obj if cast failed
+      try {
+        value = CastPyArg2Scalar(other_obj, "__pow__", 0);
+      } catch (...) {
+        PyObject* rpow = PyObject_GetAttrString(other_obj, "__rpow__");
+        if (rpow) {
+          bool has_callable_rpow = PyCallable_Check(rpow);
+          Py_DECREF(rpow);
+          if (has_callable_rpow) {
+            Py_INCREF(Py_NotImplemented);
+            return Py_NotImplemented;
+          }
+        }
+        throw;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -2071,8 +2200,16 @@ static PyObject* tensor__ne__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__ne__", 0);
+      paddle::experimental::Scalar value;
+
+      // return True if other_obj is unsupported type
+      try {
+        value = CastPyArg2Scalar(other_obj, "__ne__", 0);
+      } catch (const ::common::enforce::EnforceNotMet& e) {
+        Py_INCREF(Py_True);
+        return Py_True;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =
@@ -2164,8 +2301,16 @@ static PyObject* tensor__eq__method(TensorObject* self,
       other_tensor = paddle::empty({}, phi::DataType::FLOAT32, place);
       InitTensorWithNumpyValue(numpy_value, place, &other_tensor);
     } else {
-      paddle::experimental::Scalar value =
-          CastPyArg2Scalar(other_obj, "__eq__", 0);
+      paddle::experimental::Scalar value;
+
+      // return False if other_obj is unsupported type
+      try {
+        value = CastPyArg2Scalar(other_obj, "__eq__", 0);
+      } catch (const ::common::enforce::EnforceNotMet& e) {
+        Py_INCREF(Py_False);
+        return Py_False;
+      }
+
       if (PyComplex_Check(other_obj)) {
         eager_gil_scoped_release guard;
         other_tensor =

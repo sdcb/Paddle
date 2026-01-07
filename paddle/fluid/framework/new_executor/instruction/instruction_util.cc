@@ -161,7 +161,16 @@ phi::DeviceContext* ParseDeviceContext(pir::Operation* op,
               ->GetDevContext());
       return dev_ctx;
     }
-
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+    // If the current OP is inside a CUDAGraphOp,
+    // we must use the same device context as the parent CUDAGraphOp,
+    // mainly to ensure that cuda_graph_allocator_ is not nullptr.
+    // This is necessary for correct CUDA Graph capture and memory allocation.
+    if (op->GetParentOp()->isa<paddle::dialect::CudaGraphOp>()) {
+      VLOG(4) << "CudaGraphOp detected, using original device context";
+      return origin_dev_ctx;
+    }
+#endif
     // handle comm op
     if (op_attributes.count("ring_id") != 0) {
       int ring_id =
@@ -542,7 +551,7 @@ bool GetCondData(const phi::DenseTensor& cond) {
   std::unique_ptr<phi::DenseTensor> cpu_cond{new phi::DenseTensor()};
 #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
     defined(PADDLE_WITH_XPU) || defined(PADDLE_WITH_CUSTOM_DEVICE)
-  paddle::framework::TensorCopySync(cond, phi::CPUPlace(), cpu_cond.get());
+  paddle::framework::TensorCopySync(cond, CPUPlace(), cpu_cond.get());
 #else
   PADDLE_THROW(common::errors::PreconditionNotMet(
       "This version of PaddlePaddle does NOT support GPU/XPU but got "

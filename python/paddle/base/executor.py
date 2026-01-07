@@ -518,9 +518,9 @@ def _add_feed_fetch_ops(
         global_block, fetch_list, fetch_var_name, fetch_op
     ):
         for i, var in enumerate(fetch_list):
-            assert isinstance(
-                var, (Variable, str)
-            ), f"Wrong type for fetch_list[{i}]: {type(var)}"
+            assert isinstance(var, (Variable, str)), (
+                f"Wrong type for fetch_list[{i}]: {type(var)}"
+            )
             global_block.append_op(
                 type=fetch_op,
                 inputs={'X': [var]},
@@ -544,9 +544,9 @@ def _add_pir_fetch_ops(program, fetch_list, fetch_var_name):
     if need_fetch_info:
         with paddle.static.program_guard(program):
             for i, fetch_input in enumerate(need_fetch_info):
-                assert isinstance(
-                    fetch_input, Value
-                ), f"Wrong type for fetch_list[{i}]: {type(fetch_input)}"
+                assert isinstance(fetch_input, Value), (
+                    f"Wrong type for fetch_list[{i}]: {type(fetch_input)}"
+                )
                 if is_startup_program:
                     fetch_input = paddle._pir_ops.parameter(fetch_input.name)
                 out = paddle._pir_ops.fetch(
@@ -713,16 +713,16 @@ def _as_lodtensor(data, place, dtype=None):
     Args:
         data(numpy.ndarray|list|tuple|scalar): a instance of array, scalar, list or tuple
         data(core.Place): the place of created tensor
-        dtype(core.VarDesc.VarType|str): the expected data type of created tensor
+        dtype(str|paddle.dtype|np.dtype, optional): the expected data type of created tensor
 
     Returns:
         DenseTensor
     """
     # NOTE(zhiqiu): convert python builtin, like float, int, and list, to numpy ndarray
     if not isinstance(data, np.ndarray):
-        assert (
-            dtype is not None
-        ), 'The dtype should be given when feed data is not np.ndarray'
+        assert dtype is not None, (
+            'The dtype should be given when feed data is not np.ndarray'
+        )
         dtype = convert_dtype(dtype)
         if np.isscalar(data):
             data = np.array(data).astype(dtype)
@@ -1339,7 +1339,7 @@ class Executor:
     def __del__(self) -> None:
         # NOTE(Ruibiao): The manually call of clear is required. Because in Python, executor_cache
         # may not immediately destructed after Executor instance deleted (so does not the _StandaloneExecutor),
-        # that brings errors to mkl-dnn unit tests (see ClearMKLDNNCache in interpretercore.cc for why).
+        # that brings errors to one-dnn unit tests (see ClearONEDNNCache in interpretercore.cc for why).
         self.close()
         self._executor_cache.clear()
 
@@ -2058,9 +2058,9 @@ class Executor:
             if hasattr(program, 'lr_scheduler'):
                 from paddle.optimizer.lr import LRScheduler
 
-                assert isinstance(
-                    program.lr_scheduler, LRScheduler
-                ), "must be LRScheduler"
+                assert isinstance(program.lr_scheduler, LRScheduler), (
+                    "must be LRScheduler"
+                )
                 lr_scheduler = program.lr_scheduler
                 lr_value = lr_scheduler()
                 lr_var = program.global_block().vars[lr_scheduler._var_name]
@@ -2113,9 +2113,9 @@ class Executor:
         acp._auto_checkpoint(self, program)
 
         program._compile(scope, self.place)
-        assert (
-            program._is_inference
-        ), f"Program must have _is_inference = True, but get {program._is_inference}"
+        assert program._is_inference, (
+            f"Program must have _is_inference = True, but get {program._is_inference}"
+        )
         return self._run_inference(program._executor, feed)
 
     def _run_pir_impl(
@@ -2187,9 +2187,9 @@ class Executor:
         if hasattr(program, 'lr_scheduler'):
             from paddle.optimizer.lr import LRScheduler
 
-            assert isinstance(
-                program.lr_scheduler, LRScheduler
-            ), "must be LRScheduler"
+            assert isinstance(program.lr_scheduler, LRScheduler), (
+                "must be LRScheduler"
+            )
 
             lr_scheduler = program.lr_scheduler
             lr_value = lr_scheduler()
@@ -2416,15 +2416,6 @@ class Executor:
         fetch_info=None,
         print_period=100,
     ):
-        is_heter = 0
-        use_ps_gpu = 0
-        if program._fleet_opt is not None:
-            if program._fleet_opt.get("worker_class", "") == "HeterCpuWorker":
-                is_heter = 1
-            if program._fleet_opt.get("trainer", "") == "HeterXpuTrainer":
-                is_heter = 1
-            if program._fleet_opt.get("use_ps_gpu", False):
-                use_ps_gpu = True
         if scope is None:
             scope = global_scope()
         if fetch_list is None:
@@ -2433,8 +2424,6 @@ class Executor:
             fetch_info = []
         assert len(fetch_list) == len(fetch_info)
         compiled = isinstance(program, compiler.CompiledProgram)
-        if is_heter:
-            ret = self.split_program_by_device(program)
         if not compiled:
             # TODO: Need a better way to distinguish and specify different execution mode
             if program._pipeline_opt:
@@ -2449,8 +2438,6 @@ class Executor:
                 trainer = TrainerFactory()._create_trainer(program._fleet_opt)
                 trainer._set_thread_barrier(program._is_distributed)
             trainer._set_program(program)
-            if is_heter:
-                trainer._set_heter_info(ret)
         else:
             if program._pipeline_opt:
                 trainer = TrainerFactory()._create_trainer(
@@ -2467,9 +2454,7 @@ class Executor:
             trainer._set_program(program.program)
 
         if thread <= 0:
-            if use_ps_gpu:
-                trainer._set_thread(len(program._fleet_opt["worker_places"]))
-            elif dataset.thread_num <= 0:
+            if dataset.thread_num <= 0:
                 raise RuntimeError(
                     "You should set thread num first, either in Dataset"
                     "or in Executor.train_from_dataset"
@@ -2599,9 +2584,6 @@ class Executor:
         if program._pipeline_opt is None:
             if program._heter_pipeline_opt is None:
                 self._dump_debug_info(program=program, trainer=trainer)
-        # warning if dataset not set psgpu in psgpu mode
-        if dataset.use_ps_gpu is False and trainer.proto_desc.use_ps_gpu:
-            logging.warning("dataset should call set_use_ps_gpu in PsGpu mode")
 
         dataset._dynamic_adjust_before_train(trainer.proto_desc.thread_num)
 
@@ -2747,9 +2729,6 @@ class Executor:
         # NOTE: only for debug, very slow
         # self._dump_debug_info(program=program, trainer=trainer)
 
-        # warning if dataset not set psgpu in psgpu mode
-        if dataset.use_ps_gpu is False and trainer.proto_desc.use_ps_gpu:
-            logging.warning("dataset should call set_use_ps_gpu in PsGpu mode")
         dataset._dynamic_adjust_before_train(trainer.proto_desc.thread_num)
 
         trainer_desc = trainer._desc()  # slow, cache
@@ -2822,9 +2801,9 @@ class Executor:
             global_block, fetch_list, fetch_var_name, fetch_op
         ):
             for i, var in enumerate(fetch_list):
-                assert isinstance(
-                    var, (Variable, str)
-                ), f"Wrong type for fetch_list[{i}]: {type(var)}"
+                assert isinstance(var, (Variable, str)), (
+                    f"Wrong type for fetch_list[{i}]: {type(var)}"
+                )
                 global_block.append_op(
                     type=fetch_op,
                     inputs={'X': [var]},

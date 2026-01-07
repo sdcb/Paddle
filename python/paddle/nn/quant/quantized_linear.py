@@ -21,7 +21,6 @@ from paddle import _C_ops
 from paddle.base.data_feeder import check_dtype
 from paddle.device import (
     is_compiled_with_cuda,
-    is_compiled_with_rocm,
 )
 from paddle.device.cuda import get_device_capability
 from paddle.framework import (
@@ -43,7 +42,7 @@ if TYPE_CHECKING:
 
 def _get_arch_info():
     # Get SMVersion from device.
-    if is_compiled_with_cuda() or is_compiled_with_rocm():
+    if is_compiled_with_cuda():
         cuda_version = paddle.version.cuda()
         if (
             cuda_version is not None and cuda_version != 'False'
@@ -72,7 +71,7 @@ def weight_quantize(
     Args:
         x (Tensor): The input Tensor to be quantized, the data type is float16 or bfloat16.
         algo (str): The algo that is x will be apply, must be one of 'weight_only_int8',
-            'weight_only_int4', 'llm.int8' and 'w4a8', default: 'weight_only_int8'.
+            'weight_only_int4', 'llm.int8', 'w4a8' and 'w4afp8, default: 'weight_only_int8'.
         arch (int): The compute arch for target device. For example, A100 is 80, v100 is 70, if you do not assign arch, we will get arch from your device, default: None.
         group_size (int): The group size for weight quantization. -1 stands for default per-channel mode. Currently only support 64 or 128.
 
@@ -80,7 +79,7 @@ def weight_quantize(
         out (Tensor): The Tensor which is the quantitative results, the data type is int8, the shape is transposition of x.
         scale (Tensor): The scale Tensor which is the scale of pre-channel, the data type is float32.
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('No testing required')
             >>> import paddle
@@ -90,9 +89,9 @@ def weight_quantize(
             >>> x = paddle.rand(shape=[64, 32], dtype=paddle.float16)
             >>> out, scale = weight_quantize(x, algo='weight_only_int8')
             >>> print(out.shape)
-            [32, 64]
+            paddle.Size([32, 64])
             >>> print(scale.shape)
-            [32]
+            paddle.Size([32])
     """
     if arch is None:
         arch = _get_arch_info()
@@ -106,11 +105,14 @@ def weight_quantize(
             or arch == 89
             or arch == 90
             or arch == 92
-        ), f"Currently weight_quantize only support SM70/75/80/86/89/90. but got {arch} "
+            or arch == 100
+        ), (
+            f"Currently weight_quantize only support SM70/75/80/86/89/90/92/100. but got {arch} "
+        )
 
-    assert (
-        group_size == -1 or group_size == 64 or group_size == 128
-    ), f"Currently group_size only support -1/64/128. but got {group_size} "
+    assert group_size == -1 or group_size == 64 or group_size == 128, (
+        f"Currently group_size only support -1/64/128. but got {group_size} "
+    )
     if in_dynamic_or_pir_mode():
         return _C_ops.weight_quantize(x, algo, arch, group_size)
     else:
@@ -160,9 +162,9 @@ def weight_dequantize(
             >>> out, scale = weight_quantize(x, algo='weight_only_int8')
             >>> x_dequant = weight_dequantize(out, scale)
     """
-    assert (
-        group_size == -1 or group_size == 64 or group_size == 128
-    ), f"Currently group_size only support -1/64/128. but got {group_size} "
+    assert group_size == -1 or group_size == 64 or group_size == 128, (
+        f"Currently group_size only support -1/64/128. but got {group_size} "
+    )
 
     if in_dynamic_or_pir_mode():
         return _C_ops.weight_dequantize(x, scale, algo, group_size)
@@ -210,7 +212,7 @@ def weight_only_linear(
         Tensor: the output Tensor, the data type is the same as that of x.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('No testing required')
             >>> import paddle
@@ -221,9 +223,15 @@ def weight_only_linear(
             >>> scale = paddle.randn([32], dtype='float32')
             >>> bias = paddle.cast(paddle.randn([32]), dtype='float16')
             >>> if paddle.device.cuda.get_device_capability()[0] >= 8:
-            ...    out = weight_only_linear(x, weight, bias=bias, weight_scale=scale, weight_dtype='int8')
-            ...    print(out.shape)
-            [1, 2, 32]
+            ...     out = weight_only_linear(
+            ...         x,
+            ...         weight,
+            ...         bias=bias,
+            ...         weight_scale=scale,
+            ...         weight_dtype='int8',
+            ...     )
+            ...     print(out.shape)
+            paddle.Size([1, 2, 32])
     """
     if arch is None:
         arch = _get_arch_info()
@@ -236,10 +244,14 @@ def weight_only_linear(
             or arch == 86
             or arch == 89
             or arch == 90
-        ), f"Currently weight_quantize only support SM70/75/80/86/89/90. but got {arch} "
-    assert (
-        group_size == -1 or group_size == 64 or group_size == 128
-    ), f"Currently weight_quantize only support group size of -1, 64 or 128. but got {group_size} "
+            or arch == 92
+            or arch == 100
+        ), (
+            f"Currently weight_quantize only support SM70/75/80/86/89/90/92/100. but got {arch} "
+        )
+    assert group_size == -1 or group_size == 64 or group_size == 128, (
+        f"Currently weight_quantize only support group size of -1, 64 or 128. but got {group_size} "
+    )
 
     if in_dynamic_or_pir_mode():
         out = _C_ops.weight_only_linear(
@@ -301,7 +313,7 @@ def llm_int8_linear(
         Tensor: the output Tensor, the data type is the same as that of x.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +SKIP('No testing required')
             >>> import paddle
@@ -312,9 +324,9 @@ def llm_int8_linear(
             >>> scale = paddle.randn([32], dtype='float32')
             >>> bias = paddle.cast(paddle.randn([32]), dtype='float16')
             >>> if paddle.device.cuda.get_device_capability()[0] >= 8:
-            ...    out = llm_int8_linear(x, weight, bias=bias, weight_scale=scale, threshold=6.0)
-            ...    print(out.shape)
-            [1, 2, 32]
+            ...     out = llm_int8_linear(x, weight, bias=bias, weight_scale=scale, threshold=6.0)
+            ...     print(out.shape)
+            paddle.Size([1, 2, 32])
     """
     if in_dynamic_or_pir_mode():
         out = _C_ops.llm_int8_linear(x, weight, bias, weight_scale, threshold)

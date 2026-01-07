@@ -21,21 +21,19 @@
 
 namespace phi {
 
-#define PD_VISIT_FLOAT_AND_BF16_TYPES(TYPE, NAME, ...)                    \
-  [&] {                                                                   \
-    const auto& __dtype__ = TYPE;                                         \
-    switch (__dtype__) {                                                  \
-      PD_PRIVATE_CASE_TYPE(                                               \
-          NAME, ::paddle::DataType::FLOAT32, float, __VA_ARGS__)          \
-      PD_PRIVATE_CASE_TYPE(NAME,                                          \
-                           ::paddle::DataType::BFLOAT16,                  \
-                           ::phi::dtype::bfloat16,                        \
-                           __VA_ARGS__)                                   \
-      default:                                                            \
-        PD_THROW("function " #NAME " is not implemented for data type `", \
-                 __dtype__,                                               \
-                 "`");                                                    \
-    }                                                                     \
+#define PD_VISIT_FLOAT_AND_BF16_TYPES(TYPE, NAME, ...)                      \
+  [&] {                                                                     \
+    const auto& __dtype__ = TYPE;                                           \
+    switch (__dtype__) {                                                    \
+      PD_PRIVATE_CASE_TYPE(                                                 \
+          NAME, ::paddle::DataType::FLOAT32, float, __VA_ARGS__)            \
+      PD_PRIVATE_CASE_TYPE(                                                 \
+          NAME, ::paddle::DataType::BFLOAT16, ::phi::bfloat16, __VA_ARGS__) \
+      default:                                                              \
+        PD_THROW("function " #NAME " is not implemented for data type `",   \
+                 __dtype__,                                                 \
+                 "`");                                                      \
+    }                                                                       \
   }()
 
 template <typename T, typename Context>
@@ -238,14 +236,14 @@ KernelKey ConvGradGetKernelTypeForVar(const GetKernelTypeForVarContext* ctx) {
   // Only input require reshaping, weights and
   // bias are having shape in NCHW order
   if (((var_name == "Input") || (var_name == "Output@GRAD")) &&
-      (expected_kernel_type.layout() == phi::DataLayout::ONEDNN) &&
-      (tensor.layout() != phi::DataLayout::ONEDNN)) {
+      (expected_kernel_type.layout() == DataLayout::ONEDNN) &&
+      (tensor.layout() != DataLayout::ONEDNN)) {
     auto it = attrs.find("data_format");
     const std::string data_format = PADDLE_GET_CONST(std::string, it->second);
     auto dl = common::StringToDataLayout(data_format);
     // Some models may have intentionally set "AnyLayout" for pool
     // op. Treat this as NCHW (default data_format value)
-    if (dl != phi::DataLayout::kAnyLayout) {
+    if (dl != DataLayout::ANY) {
       return phi::KernelKey(tensor.place(), dl, expected_kernel_type.dtype());
     }
   }
@@ -255,12 +253,8 @@ KernelKey ConvGradGetKernelTypeForVar(const GetKernelTypeForVarContext* ctx) {
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(conv2d_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::ConvGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {
+PD_REGISTER_KERNEL(
+    conv2d_grad, OneDNN, ONEDNN, phi::ConvGradKernel, float, phi::bfloat16) {
   kernel->get_kerneltype_forvar_fn_ = phi::ConvGradGetKernelTypeForVar;
 }
 
@@ -269,7 +263,7 @@ PD_REGISTER_KERNEL(depthwise_conv2d_grad,
                    ONEDNN,
                    phi::DepthwiseConvGradKernel,
                    float,
-                   phi::dtype::bfloat16) {
+                   phi::bfloat16) {
   kernel->get_kerneltype_forvar_fn_ = phi::ConvGradGetKernelTypeForVar;
 }
 

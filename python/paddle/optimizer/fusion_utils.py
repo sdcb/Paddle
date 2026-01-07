@@ -39,6 +39,14 @@ align = {
 __current_device_type__ = None
 
 
+def _share_tensor_ipc_meta(tensor):
+    if tensor is None:
+        return None
+    if paddle.is_compiled_with_cuda() and not paddle.is_compiled_with_rocm():
+        return tensor.value().get_tensor()._share_cuda()
+    return None
+
+
 def get_current_device_type():
     global __current_device_type__
     if __current_device_type__ is None:
@@ -52,9 +60,9 @@ def get_current_device_type():
                 device_type = current_device.get_device_type()
             except:
                 device_type = "unknown"
-        assert (
-            device_type in alignment.keys()
-        ), f"tensor fusion helper now only support {alignment.keys()}, but got device {device_type} instead."
+        assert device_type in alignment.keys(), (
+            f"tensor fusion helper now only support {alignment.keys()}, but got device {device_type} instead."
+        )
         __current_device_type__ = device_type
     return __current_device_type__
 
@@ -92,7 +100,6 @@ class FusionStorage:
         self.merged_model_params_meta = {}
         self.dtype = dtype
         self.buffer = None
-        self.buffer_ipc_meta = None
         self.offset = 0
         self.build_buffer()
         self.mapping_tensor()
@@ -139,7 +146,6 @@ class FusionStorage:
                 self.offset += src_len
 
         self.buffer = paddle.zeros((self.offset,), dtype=self.dtype)
-        self.buffer_ipc_meta = self.buffer.value().get_tensor()._share_cuda()
 
     @imperative_base.no_grad()
     def mapping_tensor(self):
@@ -177,6 +183,13 @@ class FusionStorage:
         src.stop_gradient = stop_gradient
         self.buffer._slice(start, end)._share_buffer_to(src)
 
+    def _refresh_buffer_ipc_meta(self):
+        return _share_tensor_ipc_meta(self.buffer)
+
+    @property
+    def buffer_ipc_meta(self):
+        return self._refresh_buffer_ipc_meta()
+
 
 class FusionStorageHelper:
     def __init__(
@@ -190,7 +203,6 @@ class FusionStorageHelper:
         self.accumulators_meta = None
         self.master_weights_meta = None
         self.merged_model_params_meta = None
-        self.buffer_ipc_meta = None
         self.buffer = None
         self.cpu_buffer = None
         self.buffer_length = None
@@ -210,27 +222,31 @@ class FusionStorageHelper:
         merged_model_params_meta,
         buffer_ipc_meta,
     ):
-        assert isinstance(
-            accumulators_meta, dict
-        ), "accumulators_meta must be a dict"
+        assert isinstance(accumulators_meta, dict), (
+            "accumulators_meta must be a dict"
+        )
         self.accumulators_meta = accumulators_meta
-        assert isinstance(
-            master_weights_meta, dict
-        ), "master_weights_meta must be a dict"
+        assert isinstance(master_weights_meta, dict), (
+            "master_weights_meta must be a dict"
+        )
         self.master_weights_meta = master_weights_meta
         assert (
             isinstance(merged_model_params_meta, dict)
             or merged_model_params_meta is None
         ), "merged_model_params_meta must be a dict or None"
         self.merged_model_params_meta = merged_model_params_meta
-        assert (
-            isinstance(buffer_ipc_meta, tuple) and len(buffer_ipc_meta) == 7
-        ), "buffer_ipc_meta must be a tuple with length 7"
-        self.buffer_ipc_meta = buffer_ipc_meta
 
-        self.buffer = paddle.to_tensor(
-            paddle.base.core.DenseTensor._new_shared_cuda(self.buffer_ipc_meta)
+        assert isinstance(buffer_ipc_meta, tuple), (
+            "buffer_ipc_meta must be a tuple"
         )
+        assert len(buffer_ipc_meta) in (5, 7), (
+            "buffer_ipc_meta must be a tuple with length 5 when FLAGS_use_virtual_memory_auto_growth is True or 7 when FLAGS_use_virtual_memory_auto_growth is False."
+        )
+        new_tensor = paddle.base.core.DenseTensor._new_shared_cuda(
+            buffer_ipc_meta
+        )
+
+        self.buffer = paddle.to_tensor(new_tensor)
         self.cpu_buffer = self.buffer.pin_memory()
         self.buffer_length = self.buffer._numel()
 
@@ -242,9 +258,9 @@ class FusionStorageHelper:
         assert isinstance(start, int), "start must be an integer"
         assert isinstance(end, int), "end must be an integer"
         assert start >= 0, "start must be non-negative"
-        assert (
-            end <= self.buffer_length
-        ), "end must be less than or equal to the total buffer length"
+        assert end <= self.buffer_length, (
+            "end must be less than or equal to the total buffer length"
+        )
         task = async_offload_with_offset(
             src_tensor=self.buffer,
             dst_tensor=self.cpu_buffer,

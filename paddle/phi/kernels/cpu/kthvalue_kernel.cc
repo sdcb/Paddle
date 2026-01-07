@@ -27,7 +27,7 @@ static void getKthvalue(Type input_height,
                         const DenseTensor* input,
                         T* t_out,
                         Type* t_indices,
-                        const int& k) {
+                        const int64_t& k) {
   bool partial_sort_flag = (k * 64) < input_width;
 #ifdef PADDLE_WITH_MKLML
 #pragma omp parallel for
@@ -75,7 +75,7 @@ static void getKthvalue(Type input_height,
 template <typename T, typename Context>
 void KthvalueKernel(const Context& dev_ctx,
                     const DenseTensor& x,
-                    int k,
+                    int64_t k,
                     int axis,
                     bool keepdim,
                     DenseTensor* output,
@@ -98,11 +98,11 @@ void KthvalueKernel(const Context& dev_ctx,
                       1,
                       common::errors::InvalidArgument(
                           "the k in the kthvalue must less equal than the "
-                          "elements number of the input X, but received %d .",
+                          "elements number of the input X, but received %lld .",
                           k));
 
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
-    phi::funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
+    funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
     return;
   }
   auto out_dims = output->dims();

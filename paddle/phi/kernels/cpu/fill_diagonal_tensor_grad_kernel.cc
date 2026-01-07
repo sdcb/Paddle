@@ -52,7 +52,7 @@ void FillDiagonalTensorGradKernel(const Context& dev_ctx,
                matdim.data());
 
     auto size = x_grad->numel();
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
 
     for (int64_t i = 0; i < new_dims[0]; i += 1) {
       auto sumoff = matdim[i] + offset;
@@ -79,7 +79,7 @@ PD_REGISTER_KERNEL(fill_diagonal_tensor_grad,
                    int16_t,
                    int8_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float16,
+                   phi::complex64,
+                   phi::complex128,
                    bool) {}

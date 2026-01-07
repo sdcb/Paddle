@@ -48,14 +48,14 @@ void CopyDataByCondition(const T *x, T **y, int len, const Place &place) {
 template <typename T>
 class BeamSearchFunctor<phi::XPUContext, T> {
  public:
-  void operator()(const phi::XPUContext &context,
-                  const phi::DenseTensor *pre_ids,
-                  const phi::DenseTensor *pre_scores,
-                  const phi::DenseTensor *ids,
-                  const phi::DenseTensor *scores,
-                  phi::DenseTensor *selected_ids,
-                  phi::DenseTensor *selected_scores,
-                  phi::DenseTensor *parent_idx,
+  void operator()(const phi::XPUContext &dev_ctx,
+                  const DenseTensor *pre_ids,
+                  const DenseTensor *pre_scores,
+                  const DenseTensor *ids,
+                  const DenseTensor *scores,
+                  DenseTensor *selected_ids,
+                  DenseTensor *selected_scores,
+                  DenseTensor *parent_idx,
                   size_t level,
                   size_t beam_size,
                   int end_id,
@@ -95,15 +95,15 @@ class BeamSearchFunctor<phi::XPUContext, T> {
     auto dims = common::make_ddim(
         std::vector<int64_t>({static_cast<int>(num_instances), 1}));
     selected_ids->Resize(dims);
-    auto *selected_ids_data = context.template HostAlloc<int64_t>(selected_ids);
+    auto *selected_ids_data = dev_ctx.template HostAlloc<int64_t>(selected_ids);
     selected_scores->Resize(dims);
     auto *selected_scores_data =
-        context.template HostAlloc<float>(selected_scores);
+        dev_ctx.template HostAlloc<float>(selected_scores);
     if (parent_idx != nullptr) {
       parent_idx->Resize({static_cast<int64_t>(num_instances)});
     }
     auto *parent_idx_data =
-        parent_idx ? context.template HostAlloc<int>(parent_idx) : nullptr;
+        parent_idx ? dev_ctx.template HostAlloc<int>(parent_idx) : nullptr;
 
     // fill in data
     std::vector<size_t> low_level;
@@ -179,7 +179,7 @@ class BeamSearchFunctor<phi::XPUContext, T> {
    * Pruning must one step later than finishing (thus pre_ids is needed here),
    * since the end tokens must be written out.
    */
-  void PruneEndBeams(const phi::DenseTensor *pre_ids,
+  void PruneEndBeams(const DenseTensor *pre_ids,
                      const phi::LegacyLoD &abs_lod,
                      std::vector<std::vector<Item>> *items,
                      size_t lod_level,
@@ -263,10 +263,10 @@ class BeamSearchFunctor<phi::XPUContext, T> {
    * For each source, select top beam_size records.
    */
   std::vector<std::vector<Item>> SelectTopBeamSizeItems(
-      const phi::DenseTensor *pre_ids,
-      const phi::DenseTensor *pre_scores,
-      const phi::DenseTensor *ids,
-      const phi::DenseTensor *scores,
+      const DenseTensor *pre_ids,
+      const DenseTensor *pre_scores,
+      const DenseTensor *ids,
+      const DenseTensor *scores,
       size_t lod_level,
       size_t beam_size,
       int end_id,

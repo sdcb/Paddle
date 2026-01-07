@@ -248,13 +248,15 @@ static void GatherOutputGradToInputGrad(const DenseTensor& output_grad,
   for (int i = 0; i < n; i++) {
     for (int k = 0; k < out_h; k++) {
       for (int l = 0; l < out_w; l++) {
-        if (IsInBound(
-                x_t(i, k, l), y_t(i, k, l), (T)(in_w - 1), (T)(in_h - 1))) {
+        if (IsInBound<int>(static_cast<int>(x_t(i, k, l)),
+                           static_cast<int>(y_t(i, k, l)),
+                           (in_w - 1),
+                           (in_h - 1))) {
           for (int j = 0; j < c; j++) {
             input_grad_t(i,
                          j,
-                         static_cast<int>(round(y_t(i, k, l))),
-                         static_cast<int>(round(x_t(i, k, l)))) +=
+                         static_cast<int>(y_t(i, k, l)),
+                         static_cast<int>(x_t(i, k, l))) +=
                 output_grad_t(i, j, k, l) * d1_t(i, k, l) * d2_t(i, k, l);
           }
         }
@@ -293,18 +295,18 @@ static void Gather3DOutputGradToInputGrad(const DenseTensor& output_grad,
     for (int m = 0; m < out_d; m++) {
       for (int k = 0; k < out_h; k++) {
         for (int l = 0; l < out_w; l++) {
-          if (IsInBound3D(x_t(i, m, k, l),
-                          y_t(i, m, k, l),
-                          z_t(i, m, k, l),
-                          (T)(in_w - 1),
-                          (T)(in_h - 1),
-                          (T)(in_d - 1))) {
+          if (IsInBound3D<int>(static_cast<int>(x_t(i, m, k, l)),
+                               static_cast<int>(y_t(i, m, k, l)),
+                               static_cast<int>(z_t(i, m, k, l)),
+                               (in_w - 1),
+                               (in_h - 1),
+                               (in_d - 1))) {
             for (int j = 0; j < c; j++) {
               input_grad_t(i,
                            j,
-                           static_cast<int>(round(z_t(i, m, k, l))),
-                           static_cast<int>(round(y_t(i, m, k, l))),
-                           static_cast<int>(round(x_t(i, m, k, l)))) +=
+                           static_cast<int>(z_t(i, m, k, l)),
+                           static_cast<int>(y_t(i, m, k, l)),
+                           static_cast<int>(x_t(i, m, k, l))) +=
                   output_grad_t(i, j, m, k, l) * d1_t(i, m, k, l) *
                   d2_t(i, m, k, l) * d3_t(i, m, k, l);
             }
@@ -590,13 +592,15 @@ static void GatherOutputGradToInputGrad(const DenseTensor& output_grad,
   for (int i = 0; i < n; i++) {
     for (int k = 0; k < out_h; k++) {
       for (int l = 0; l < out_w; l++) {
-        if (IsInBound(
-                x_t(i, k, l), y_t(i, k, l), (T)(in_w - 1), (T)(in_h - 1))) {
+        if (IsInBound<int>(static_cast<int>(std::nearbyint(x_t(i, k, l))),
+                           static_cast<int>(std::nearbyint(y_t(i, k, l))),
+                           (in_w - 1),
+                           (in_h - 1))) {
           for (int j = 0; j < c; j++) {
             input_grad_t(i,
                          j,
-                         static_cast<int>(round(y_t(i, k, l))),
-                         static_cast<int>(round(x_t(i, k, l)))) +=
+                         static_cast<int>(std::nearbyint(y_t(i, k, l))),
+                         static_cast<int>(std::nearbyint(x_t(i, k, l)))) +=
                 output_grad_t(i, j, k, l);
           }
         }
@@ -628,18 +632,19 @@ static void Gather3DOutputGradToInputGrad(const DenseTensor& output_grad,
     for (int m = 0; m < out_d; m++) {
       for (int k = 0; k < out_h; k++) {
         for (int l = 0; l < out_w; l++) {
-          if (IsInBound3D(x_t(i, m, k, l),
-                          y_t(i, m, k, l),
-                          z_t(i, m, k, l),
-                          (T)(in_w - 1),
-                          (T)(in_h - 1),
-                          (T)(in_d - 1))) {
+          if (IsInBound3D<int>(
+                  static_cast<int>(std::nearbyint(x_t(i, m, k, l))),
+                  static_cast<int>(std::nearbyint(y_t(i, m, k, l))),
+                  static_cast<int>(std::nearbyint(z_t(i, m, k, l))),
+                  (in_w - 1),
+                  (in_h - 1),
+                  (in_d - 1))) {
             for (int j = 0; j < c; j++) {
               input_grad_t(i,
                            j,
-                           static_cast<int>(round(z_t(i, m, k, l))),
-                           static_cast<int>(round(y_t(i, m, k, l))),
-                           static_cast<int>(round(x_t(i, m, k, l)))) +=
+                           static_cast<int>(std::nearbyint(z_t(i, m, k, l))),
+                           static_cast<int>(std::nearbyint(y_t(i, m, k, l))),
+                           static_cast<int>(std::nearbyint(x_t(i, m, k, l)))) +=
                   output_grad_t(i, j, m, k, l);
             }
           }
@@ -673,6 +678,13 @@ void GridSampleGradKernel(const Context& dev_ctx,
     return;
   }
 
+  std::string enum_mode;
+  if (mode == "nearest") {
+    enum_mode = "nearest";
+  } else {
+    enum_mode = "bilinear";
+  }
+
   if (x.dims().size() == 4) {
     const int n = static_cast<int>(grid.dims()[0]);
     const int out_h = static_cast<int>(grid.dims()[1]);
@@ -683,13 +695,12 @@ void GridSampleGradKernel(const Context& dev_ctx,
 
     x_grad->Resize({n, c, in_h, in_w});
     dev_ctx.template Alloc<T>(x_grad);
-    phi::funcs::SetConstant<Context, T>()(dev_ctx, x_grad, static_cast<T>(0));
+    funcs::SetConstant<Context, T>()(dev_ctx, x_grad, static_cast<T>(0));
 
     if (grid_grad != nullptr) {
       grid_grad->Resize({n, out_h, out_w, 2});
       dev_ctx.template Alloc<T>(grid_grad);
-      phi::funcs::SetConstant<Context, T>()(
-          dev_ctx, grid_grad, static_cast<T>(0));
+      funcs::SetConstant<Context, T>()(dev_ctx, grid_grad, static_cast<T>(0));
     }
 
     DenseTensor grid_x, grid_y;
@@ -704,7 +715,10 @@ void GridSampleGradKernel(const Context& dev_ctx,
                                  &grid_y,
                                  &grid_x_scale,
                                  &grid_y_scale);
-    if (mode == "bilinear") {
+    if (enum_mode == "nearest") {
+      GatherOutputGradToInputGrad<T>(out_grad, x_grad, grid_x, grid_y);
+
+    } else if (enum_mode == "bilinear") {
       GatherBilinearGrad<T>(dev_ctx,
                             x,
                             out_grad,
@@ -714,12 +728,6 @@ void GridSampleGradKernel(const Context& dev_ctx,
                             &grid_y_scale,
                             x_grad,
                             grid_grad);
-    } else {
-      auto grid_x_t = EigenTensor<T, 3>::From(grid_x);
-      auto grid_y_t = EigenTensor<T, 3>::From(grid_y);
-      grid_x_t = grid_x_t.round();
-      grid_y_t = grid_y_t.round();
-      GatherOutputGradToInputGrad<T>(out_grad, x_grad, grid_x, grid_y);
     }
   } else {
     const int n = static_cast<int>(grid.dims()[0]);
@@ -733,13 +741,12 @@ void GridSampleGradKernel(const Context& dev_ctx,
 
     x_grad->Resize({n, c, in_d, in_h, in_w});
     dev_ctx.template Alloc<T>(x_grad);
-    phi::funcs::SetConstant<Context, T>()(dev_ctx, x_grad, static_cast<T>(0));
+    funcs::SetConstant<Context, T>()(dev_ctx, x_grad, static_cast<T>(0));
 
     if (grid_grad != nullptr) {
       grid_grad->Resize({n, out_d, out_h, out_w, 3});
       dev_ctx.template Alloc<T>(grid_grad);
-      phi::funcs::SetConstant<Context, T>()(
-          dev_ctx, grid_grad, static_cast<T>(0));
+      funcs::SetConstant<Context, T>()(dev_ctx, grid_grad, static_cast<T>(0));
     }
     DenseTensor grid_x, grid_y, grid_z;
     DenseTensor grid_x_scale, grid_y_scale, grid_z_scale;
@@ -757,7 +764,11 @@ void GridSampleGradKernel(const Context& dev_ctx,
                                    &grid_x_scale,
                                    &grid_y_scale,
                                    &grid_z_scale);
-    if (mode == "bilinear") {
+    if (enum_mode == "nearest") {
+      Gather3DOutputGradToInputGrad<T>(
+          out_grad, x_grad, grid_x, grid_y, grid_z);
+
+    } else if (enum_mode == "bilinear") {
       Gather3DBilinearGrad<T>(dev_ctx,
                               x,
                               out_grad,
@@ -769,9 +780,6 @@ void GridSampleGradKernel(const Context& dev_ctx,
                               &grid_z_scale,
                               x_grad,
                               grid_grad);
-    } else {
-      Gather3DOutputGradToInputGrad<T>(
-          out_grad, x_grad, grid_x, grid_y, grid_z);
     }
   }
 }

@@ -31,11 +31,7 @@ void PReluGradKernel(const Context& dev_ctx,
   if (x_grad->numel() == 0) {
     dev_ctx.template Alloc<T>(x_grad);
     if (alpha_grad) {
-      phi::Full<T, Context>(
-          dev_ctx,
-          phi::IntArray(common::vectorize(alpha_grad->dims())),
-          0,
-          alpha_grad);
+      Full<T, Context>(dev_ctx, alpha_grad->dims(), 0, alpha_grad);
     }
   }
   bool is_test = dev_ctx.HasDnnAttr("is_test")
@@ -71,9 +67,5 @@ void PReluGradKernel(const Context& dev_ctx,
 
 }  // namespace phi
 
-PD_REGISTER_KERNEL(prelu_grad,
-                   OneDNN,
-                   ONEDNN,
-                   phi::PReluGradKernel,
-                   float,
-                   phi::dtype::bfloat16) {}
+PD_REGISTER_KERNEL(
+    prelu_grad, OneDNN, ONEDNN, phi::PReluGradKernel, float, phi::bfloat16) {}

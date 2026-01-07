@@ -65,7 +65,7 @@ void IntBincountImpl(const Context &dev_ctx,
   for (int i = 0; i < 2; ++i) {
     if (workspace_size > 0) {
       workspace =
-          phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(workspace_size)});
+          Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(workspace_size)});
       workspace_ptr = workspace.data();
     }
     auto err = cub::DeviceHistogram::HistogramEven(workspace_ptr,
@@ -96,7 +96,7 @@ void IntBincount(const Context &dev_ctx,
 
   auto bins_dtype = TransToDataType(out_dtype);
 
-  // auto x_dytpe = x.dtype();
+  // auto x_dtype = x.dtype();
   auto low_v = static_cast<T>(low);
   auto high_v = static_cast<T>(high);
   PD_CHECK(static_cast<int64_t>(low_v) == low);

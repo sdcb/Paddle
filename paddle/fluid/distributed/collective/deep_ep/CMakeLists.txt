@@ -6,12 +6,25 @@ if(WITH_NVSHMEM)
   string(REGEX REPLACE "-gencode arch=compute_[0-8][0-9],code=sm_[0-8][0-9]" ""
                        CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 
-  set(DEEPEP_KERNEL_SRCS kernels/intranode.cu kernels/runtime.cu
-                         kernels/internode.cu kernels/internode_ll.cu)
-  cc_library(
-    deepep_kernels
-    SRCS ${DEEPEP_KERNEL_SRCS}
-    DEPS nvshmem cudadevrt)
+  set(DEEPEP_KERNEL_SRCS
+      kernels/intranode.cu
+      kernels/runtime.cu
+      kernels/internode.cu
+      kernels/internode_ll.cu
+      kernels/internode_ll_two_stage.cu
+      kernels/internode_ll.cu
+      kernels/m2n_ll_two_stage.cu)
+  if(WITH_ONEDNN)
+    cc_library(
+      deepep_kernels
+      SRCS ${DEEPEP_KERNEL_SRCS}
+      DEPS nvshmem cudadevrt onednn)
+  else()
+    cc_library(
+      deepep_kernels
+      SRCS ${DEEPEP_KERNEL_SRCS}
+      DEPS nvshmem cudadevrt)
+  endif()
 
   set_target_properties(deepep_kernels PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
   set_target_properties(deepep_kernels PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS

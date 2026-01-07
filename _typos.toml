@@ -4,13 +4,8 @@ extend-exclude = [
     "third_party",
     "patches",
     "build",
-    # Skip `intermidiate` check in these files
-    "test/cpp/eager/task_tests/CMakeLists.txt",
-    "test/cpp/eager/task_tests/hook_test_intermidiate.cc",
     # Skip `creater` check in these files
     "paddle/fluid/inference/tensorrt/convert/CMakeLists.txt",
-    "paddle/fluid/inference/tensorrt/convert/generic_and_custom_plugin_creater.cc",
-    "paddle/fluid/inference/tensorrt/convert/test_custom_plugin_creater.cc",
 ]
 
 [default]
@@ -32,6 +27,7 @@ cacl = 'cacl'
 CANN = 'CANN'
 Clas = 'Clas'
 clen = 'clen'
+Copyer = 'Copyer'
 datas = 'datas'
 dota = 'dota'
 dout = "dout"
@@ -44,6 +40,7 @@ operants = 'operants'
 Optin = 'Optin'
 padd = 'padd'
 pash = 'pash'
+setp = 'setp'
 splited = 'splited'
 splitted = 'splitted'
 statis = 'statis'

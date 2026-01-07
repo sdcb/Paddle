@@ -68,8 +68,8 @@ void BaddbmmGradKernel(const Context& dev_ctx,
                        DenseTensor* y_grad) {
   using MPType = typename phi::dtype::MPTypeTrait<T>::Type;
   bool is_float16_or_bfloat16 = false;
-  if (std::is_same<T, phi::dtype::float16>::value ||
-      std::is_same<T, phi::dtype::bfloat16>::value) {
+  if (std::is_same<T, phi::float16>::value ||
+      std::is_same<T, phi::bfloat16>::value) {
     is_float16_or_bfloat16 = true;
   }
 
@@ -78,7 +78,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     in_dims = {input.dims()[0], 1, input.dims()[1]};
     input_grad->Resize(in_dims);
   }
-  int total_elems = 0;
+  int64_t total_elems = 0;
 
   VLOG(3) << "alpha: " << alpha << " beta: " << beta;
 
@@ -190,7 +190,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
         mt_blas.VCOPY(
             total_elems, out_grad.data<MPType>(), input_grad->data<MPType>());
       } else {
-        phi::funcs::ForRange<Context> for_range(dev_ctx, total_elems);
+        funcs::ForRange<Context> for_range(dev_ctx, total_elems);
         BCopyOrScaleFunctor<T> functor(
             1, out_grad.data<T>(), input_grad->data<T>(), total_elems);
         for_range(functor);
@@ -201,7 +201,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     if (!is_float16_or_bfloat16) {
       mt_blas.SCAL(total_elems, beta, input_grad->data<MPType>());
     } else {
-      phi::funcs::ForRange<Context> for_range(dev_ctx, total_elems);
+      funcs::ForRange<Context> for_range(dev_ctx, total_elems);
       BCopyOrScaleFunctor<T> functor(
           beta, input_grad->data<T>(), input_grad->data<T>(), total_elems);
       for_range(functor);
@@ -212,7 +212,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     total_elems = x.dims()[0] * x.dims()[1] * x.dims()[2];
     // x_grad = out_grad * y'. x_grad: B x M x K, out_grad : B x M x N, y : B x
     // K x N
-    for (int i = 0; i < x.dims()[0]; ++i) {
+    for (int64_t i = 0; i < x.dims()[0]; ++i) {
       auto out_grad_slice = out_grad.Slice(i, i + 1);
       auto y_slice = y.Slice(i, i + 1);
       auto x_grad_slice = x_grad->Slice(i, i + 1);
@@ -227,7 +227,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     if (!is_float16_or_bfloat16) {
       mt_blas.SCAL(total_elems, alpha, x_grad->data<MPType>());
     } else {
-      phi::funcs::ForRange<Context> for_range(dev_ctx, total_elems);
+      funcs::ForRange<Context> for_range(dev_ctx, total_elems);
       BCopyOrScaleFunctor<T> functor(
           alpha, x_grad->data<T>(), x_grad->data<T>(), total_elems);
       for_range(functor);
@@ -238,7 +238,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     total_elems = y.dims()[0] * y.dims()[1] * y.dims()[2];
     // y_grad = x' * out_grad. y_grad: B x K x N, out_grad : B x M x N, x : B x
     // M x K
-    for (int i = 0; i < x.dims()[0]; ++i) {
+    for (int64_t i = 0; i < x.dims()[0]; ++i) {
       auto out_grad_slice = out_grad.Slice(i, i + 1);
       auto x_slice = x.Slice(i, i + 1);
       auto y_grad_slice = y_grad->Slice(i, i + 1);
@@ -251,7 +251,7 @@ void BaddbmmGradKernel(const Context& dev_ctx,
     if (!is_float16_or_bfloat16) {
       mt_blas.SCAL(total_elems, alpha, y_grad->data<MPType>());
     } else {
-      phi::funcs::ForRange<Context> for_range(dev_ctx, total_elems);
+      funcs::ForRange<Context> for_range(dev_ctx, total_elems);
       BCopyOrScaleFunctor<T> functor(
           alpha, y_grad->data<T>(), y_grad->data<T>(), total_elems);
       for_range(functor);

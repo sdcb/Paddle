@@ -35,7 +35,7 @@ void BilinearKernel(const Context& dev_ctx,
 
   auto batch_size = x.dims()[0];
   auto weight_dims = weight.dims();
-  int out_dim = weight_dims[0];
+  int64_t out_dim = weight_dims[0];
   auto x_dim = weight_dims[1];
   auto y_dim = weight_dims[2];
   auto& place = *dev_ctx.eigen_device();
@@ -48,20 +48,20 @@ void BilinearKernel(const Context& dev_ctx,
   dev_ctx.template Alloc<T>(&left_mul);
   auto left_mul_mat = EigenMatrix<T>::From(left_mul);
 
-  for (int i = 0; i < out_dim; ++i) {
+  for (int64_t i = 0; i < out_dim; ++i) {
     auto output_col_vec = output_mat.chip(i, 1);
     DenseTensor weight_mat =
         weight.Slice(i, i + 1).Resize(common::make_ddim({x_dim, y_dim}));
-    phi::funcs::GetBlas<Context, T>(dev_ctx).GEMM(CblasNoTrans,
-                                                  CblasNoTrans,
-                                                  batch_size,
-                                                  y_dim,
-                                                  x_dim,
-                                                  1,
-                                                  x.data<T>(),
-                                                  weight_mat.data<T>(),
-                                                  0,
-                                                  left_mul.data<T>());
+    funcs::GetBlas<Context, T>(dev_ctx).GEMM(CblasNoTrans,
+                                             CblasNoTrans,
+                                             batch_size,
+                                             y_dim,
+                                             x_dim,
+                                             1,
+                                             x.data<T>(),
+                                             weight_mat.data<T>(),
+                                             0,
+                                             left_mul.data<T>());
     output_col_vec.device(place) =
         (left_mul_mat * y_mat).sum(Eigen::DSizes<int, 1>(1));
   }

@@ -23,14 +23,15 @@
 #include <infiniband/mlx5dv.h>
 #include <non_abi/device/threadgroup/nvshmemi_common_device_defines.cuh>
 #include <device_host_transport/nvshmem_common_ibgda.h>
+#ifdef __NVCC__
+#include <cub/cub.cuh>
+#endif
 // clang-format on
-
 #include "paddle/fluid/distributed/collective/deep_ep/kernels/configs.cuh"
 #include "paddle/fluid/distributed/collective/deep_ep/kernels/exception.cuh"
 #include "paddle/fluid/distributed/collective/deep_ep/kernels/ibgda_device.cuh"
 #include "paddle/fluid/distributed/collective/deep_ep/kernels/launch.cuh"
 #include "paddle/phi/kernels/funcs/aligned_vector.h"
-
 namespace deep_ep {
 
 namespace internode_ll {
@@ -77,7 +78,11 @@ void clean_low_latency_buffer(int* clean_0,
                 num_clean_int_1);
 }
 
-template <bool kUseFP8, int kNumWarpGroups, int kNumWarpsPerGroup, int kHidden>
+template <bool kUseFP8,
+          int kNumWarpGroups,
+          int kNumWarpsPerGroup,
+          int kHidden,
+          int kNumPerChannels = 128>
 __global__ __launch_bounds__(
     kNumWarpGroups* kNumWarpsPerGroup * 32,
     1) void dispatch(void* packed_recv_x,
@@ -115,10 +120,9 @@ __global__ __launch_bounds__(
   const bool use_expertwise_scale = expertwise_scale;
 
   // FP8 staffs
-  constexpr int kNumPerChannels = 128;
   constexpr float kFP8Margin = 1e-4, kFP8Amax = 448,
                   kFP8AmaxInv = 1.0f / 448.0f;
-  const int num_scales = kHidden / kNumPerChannels;
+  const int num_scales = kNumPerChannels == -1 ? 1 : kHidden / kNumPerChannels;
   size_t hidden_bytes =
       kHidden * (kUseFP8 ? sizeof(__nv_fp8_storage_t) : sizeof(nv_bfloat16));
 
@@ -130,8 +134,9 @@ __global__ __launch_bounds__(
   // NOTES: currently we have 3 reserved int fields for future use
   using vec_t = typename std::conditional<kUseFP8, int2, int4>::type;
   size_t num_bytes_per_msg =
-      sizeof(int4) + (kUseFP8 ? (kHidden + num_scales * sizeof(float))
-                              : (kHidden * sizeof(nv_bfloat16)));
+      sizeof(int4) + (kUseFP8
+                          ? (kHidden + (num_scales + 3) / 4 * 4 * sizeof(float))
+                          : (kHidden * sizeof(nv_bfloat16)));
   if (use_expertwise_scale) num_bytes_per_msg = sizeof(int4) + kHidden;
 
   const size_t num_int4_per_msg = num_bytes_per_msg / sizeof(int4);
@@ -148,7 +153,7 @@ __global__ __launch_bounds__(
   // 2. The last warp for reading `topk_idx` and count for per-expert
   // information
   if (warp_id < num_warps - 1) {
-    constexpr int kNumElemsPerRead = sizeof(int4) / sizeof(nv_bfloat16);
+    constexpr int kNumElemsPerRead = sizeof(int4) / sizeof(nv_bfloat16);  // 8
     EP_DEVICE_ASSERT(kHidden % kNumElemsPerRead == 0);
     EP_STATIC_ASSERT(kNumElemsPerRead * 32 % kNumPerChannels == 0,
                      "Invalid vectorization");
@@ -189,7 +194,32 @@ __global__ __launch_bounds__(
       // Note(zkk)
       // create a run_deepep_loop, so I need not modify Deepep's code any more.
       int run_deepep_loop = 1;
-      if (use_expertwise_scale) {
+      if (use_expertwise_scale && kUseFP8) {  // w4afp8 static quant
+        run_deepep_loop = 0;
+        for (int ii = 0; ii < num_topk; ii++) {
+          int64_t tmp_id = __ldg(&topk_idx[ii + token_idx * num_topk]);
+          float scale = __ldg(&expertwise_scale[tmp_id]);
+          for (int i = thread_id; i < hidden_bf16_int4; i += num_threads) {
+            auto int4_value = __ldg(x_int4 + i);
+            auto bf16_values = reinterpret_cast<nv_bfloat16*>(&int4_value);
+            int2 int2_value;
+            phi::AlignedVector<phi::dtype::float8_e4m3fn, 8> res_vec;
+            const float max_bound = 448.f;
+            const float min_bound = -448.f;
+            for (int j = 0; j < 8; j++) {
+              float quant_value =
+                  max_bound * scale * static_cast<float>(bf16_values[j]);
+              quant_value = quant_value > max_bound ? max_bound : quant_value;
+              quant_value = quant_value < min_bound ? min_bound : quant_value;
+              res_vec[j] = static_cast<phi::dtype::float8_e4m3fn>(quant_value);
+            }
+            phi::Store(res_vec,
+                       reinterpret_cast<phi::dtype::float8_e4m3fn*>(rdma_x) +
+                           (ii + token_idx * num_topk) * num_bytes_per_msg +
+                           sizeof(int4) + i * sizeof(res_vec));
+          }
+        }
+      } else if (use_expertwise_scale) {  // w4aint8 static quant
         run_deepep_loop = 0;
         for (int ii = 0; ii < num_topk; ii++) {
           int tmp_id = topk_idx[ii + token_idx * num_topk];
@@ -217,32 +247,63 @@ __global__ __launch_bounds__(
         }
       }
 
-// FP8 cast
+      // FP8 cast
+      if (kUseFP8 && !use_expertwise_scale &&
+          kNumPerChannels == -1) {  // fp8 per-token dynamic quant
+        __shared__ float amax_cache[num_warps - 1];
+        for (int i = thread_id; i < num_warps - 1; i += num_threads) {
+          amax_cache[i] = 0.0f;
+        }
+        asm volatile("bar.sync 1, %0;" ::"r"(num_threads));
+        float amax = kFP8Margin, scale, scale_inv;
 #pragma unroll
-      for (int i = thread_id; i < hidden_bf16_int4 * run_deepep_loop;
-           i += num_threads) {
-        // Read
-        auto int4_value = __ldg(x_int4 + i);
-
-        if (kUseFP8) {
-          // Calculate local amax
+        for (int i = thread_id; i < hidden_bf16_int4; i += num_threads) {
+          auto int4_value = __ldg(x_int4 + i);
           auto bf16_values = reinterpret_cast<nv_bfloat16*>(&int4_value);
           float fp32_values[kNumElemsPerRead];
-          float amax = kFP8Margin, scale, scale_inv;
 #pragma unroll
           for (int j = 0; j < kNumElemsPerRead; ++j) {
             fp32_values[j] = static_cast<float>(bf16_values[j]);
             amax = fmaxf(amax, fabsf(fp32_values[j]));
           }
-
+#pragma unroll
+          for (int j = 0; j < kNumElemsPerRead; ++j) {
+            fp32_values[j] = static_cast<float>(bf16_values[j]);
+            amax = fmaxf(amax, fabsf(fp32_values[j]));
+          }
           // Reduce amax and scale
-          EP_STATIC_ASSERT(kNumElemsPerRead * 32 / kNumPerChannels == 2,
+          EP_STATIC_ASSERT((kNumPerChannels == -1) ||
+                               (kNumElemsPerRead * 32 / kNumPerChannels == 2),
                            "Invalid vectorization");
-          amax = half_warp_reduce_max(amax), scale = kFP8Amax / amax,
-          scale_inv = amax * kFP8AmaxInv;
-          if (lane_id == 0 || lane_id == 16)
-            rdma_x_scales[i * kNumElemsPerRead / 128] = scale_inv;
+          amax = warp_reduce_max(amax);
+          if (lane_id == 0) {
+            amax_cache[warp_id] = amax;
+          }
+        }
+        asm volatile("bar.sync 1, %0;" ::"r"(num_threads));
+        if (warp_id == 0) {
+          float thread_amax =
+              lane_id < (num_warps - 1) ? amax_cache[lane_id] : 0.0f;
+          thread_amax = warp_reduce_max(thread_amax);
+          if (lane_id == 0) {
+            amax_cache[0] = thread_amax;
+          }
+        }
+        asm volatile("bar.sync 1, %0;" ::"r"(num_threads));
+        amax = amax_cache[0];
+        scale = 440.f / amax;
+        // scale_inv = amax * kFP8AmaxInv;
+        if (threadIdx.x == 0) {
+          rdma_x_scales[0] = amax;
+        }
 
+        for (int i = thread_id; i < hidden_bf16_int4; i += num_threads) {
+          auto int4_value = __ldg(x_int4 + i);
+          auto bf16_values = reinterpret_cast<nv_bfloat16*>(&int4_value);
+          float fp32_values[kNumElemsPerRead];
+          for (int j = 0; j < kNumElemsPerRead; ++j) {
+            fp32_values[j] = static_cast<float>(bf16_values[j]);
+          }
           // Cast into send buffer
           vec_t int2_value;
           auto fp8x2_values =
@@ -255,11 +316,53 @@ __global__ __launch_bounds__(
                 __nv_cvt_float2_to_fp8x2(fp32x2, __NV_SATFINITE, __NV_E4M3);
           }
           rdma_x_vec[i] = int2_value;
-        } else {
-          // Reinterpret-cast is for C++14 compatibility
-          rdma_x_vec[i] = *reinterpret_cast<vec_t*>(&int4_value);
+        }
+      } else {  // groupwise fp8
+#pragma unroll
+        for (int i = thread_id; i < hidden_bf16_int4 * run_deepep_loop;
+             i += num_threads) {
+          // Read
+          auto int4_value = __ldg(x_int4 + i);
+
+          if (kUseFP8 && !use_expertwise_scale) {
+            // Calculate local amax
+            auto bf16_values = reinterpret_cast<nv_bfloat16*>(&int4_value);
+            float fp32_values[kNumElemsPerRead];
+            float amax = kFP8Margin, scale, scale_inv;
+#pragma unroll
+            for (int j = 0; j < kNumElemsPerRead; ++j) {
+              fp32_values[j] = static_cast<float>(bf16_values[j]);
+              amax = fmaxf(amax, fabsf(fp32_values[j]));
+            }
+
+            // Reduce amax and scale
+            EP_STATIC_ASSERT((kNumPerChannels == -1) ||
+                                 (kNumElemsPerRead * 32 / kNumPerChannels == 2),
+                             "Invalid vectorization");
+            amax = half_warp_reduce_max(amax), scale = kFP8Amax / amax,
+            scale_inv = amax * kFP8AmaxInv;
+            if (lane_id == 0 || lane_id == 16)
+              rdma_x_scales[i * kNumElemsPerRead / 128] = scale_inv;
+
+            // Cast into send buffer
+            vec_t int2_value;
+            auto fp8x2_values =
+                reinterpret_cast<__nv_fp8x2_storage_t*>(&int2_value);
+#pragma unroll
+            for (int j = 0; j < kNumElemsPerRead; j += 2) {
+              float2 fp32x2 = {fp32_values[j] * scale,
+                               fp32_values[j + 1] * scale};
+              fp8x2_values[j / 2] =
+                  __nv_cvt_float2_to_fp8x2(fp32x2, __NV_SATFINITE, __NV_E4M3);
+            }
+            rdma_x_vec[i] = int2_value;
+          } else {
+            // Reinterpret-cast is for C++14 compatibility
+            rdma_x_vec[i] = *reinterpret_cast<vec_t*>(&int4_value);
+          }
         }
       }
+
       asm volatile("bar.sync 1, %0;" ::"r"(num_threads));
 
       // Issue IBGDA sends
@@ -330,7 +433,7 @@ __global__ __launch_bounds__(
     EP_DEVICE_ASSERT(num_sms > 1);
     if (sm_id == 0) {
       // The first SM is also responsible for checking QPs
-      EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe == num_local_experts);
+      EP_DEVICE_ASSERT(ibgda_get_state()->num_rc_per_pe >= num_local_experts);
 
 // The first SM is also responsible for cleaning the next buffer
 #pragma unroll
@@ -502,22 +605,29 @@ LOW_LATENCY_DISPATCH_RECV:
                          st_na_global);
 
       // Copy scales
-      if (kUseFP8) {
+      if (kUseFP8 && !use_expertwise_scale) {
         const auto src_scales = reinterpret_cast<float*>(
             reinterpret_cast<uint8_t*>(src_data) + hidden_bytes);
         const auto dst_scales =
             reinterpret_cast<float*>(recv_x_scales + recv_token_begin_idx + i);
         const auto scale_stride = num_ranks * num_max_dispatch_tokens_per_rank;
-        auto scale_0 =
-            lane_id < num_scales ? ld_nc_global(src_scales + lane_id) : 0;
-        auto scale_1 = (lane_id + 32) < num_scales
-                           ? ld_nc_global(src_scales + lane_id + 32)
-                           : 0;
-        lane_id < num_scales ? dst_scales[lane_id * scale_stride] = scale_0
-                             : 0.0f;
-        (lane_id + 32) < num_scales
-            ? dst_scales[(lane_id + 32) * scale_stride] = scale_1
-            : 0.0f;
+        if constexpr (kNumPerChannels == -1) {
+          if (lane_id == 0) {
+            auto scale = ld_nc_global(src_scales);
+            dst_scales[0] = scale;
+          }
+        } else {
+          auto scale_0 =
+              lane_id < num_scales ? ld_nc_global(src_scales + lane_id) : 0;
+          auto scale_1 = (lane_id + 32) < num_scales
+                             ? ld_nc_global(src_scales + lane_id + 32)
+                             : 0;
+          lane_id < num_scales ? dst_scales[lane_id * scale_stride] = scale_0
+                               : 0.0f;
+          (lane_id + 32) < num_scales
+              ? dst_scales[(lane_id + 32) * scale_stride] = scale_1
+              : 0.0f;
+        }
       }
     }
   }
@@ -546,15 +656,15 @@ void dispatch(void* packed_recv_x,
               bool use_fp8,
               void* workspace,
               cudaStream_t stream,
-              int phases) {
+              int phases,
+              int num_per_channel) {
   constexpr int kNumMaxTopK = 9;
-  constexpr int kNumWarpsPerGroup = 10;
-  constexpr int kNumWarpGroups = 3;
-  EP_STATIC_ASSERT(kNumMaxTopK + 1 <= kNumWarpGroups * kNumWarpsPerGroup,
-                   "Too many top-k selections");
-
-  const auto num_warps = kNumWarpGroups * kNumWarpsPerGroup;
-  const auto num_sms = cell_div(num_experts, kNumWarpGroups);
+  constexpr int NUM_WARPS = 32;
+  const int dev_id = 0;
+  int sm_count;
+  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, dev_id);
+  const int num_warp_groups = cell_div(num_experts, sm_count);
+  const auto num_sms = max(sm_count, cell_div(num_experts, num_warp_groups));
   EP_HOST_ASSERT(num_topk <= kNumMaxTopK);
 
   // Workspace checks
@@ -563,41 +673,54 @@ void dispatch(void* packed_recv_x,
       atomic_counter_per_expert + num_experts;
   EP_HOST_ASSERT(num_experts * sizeof(int) * 2 <= NUM_WORKSPACE_BYTES);
 
-#define DISPATCH_LAUNCH_CASE(hidden)                                          \
-  {                                                                           \
-    auto dispatch_func =                                                      \
-        use_fp8 ? dispatch<true, kNumWarpGroups, kNumWarpsPerGroup, hidden>   \
-                : dispatch<false, kNumWarpGroups, kNumWarpsPerGroup, hidden>; \
-    LAUNCH_KERNEL(&cfg,                                                       \
-                  dispatch_func,                                              \
-                  packed_recv_x,                                              \
-                  packed_recv_x_scales,                                       \
-                  packed_recv_src_info,                                       \
-                  packed_recv_layout_range,                                   \
-                  packed_recv_count,                                          \
-                  rdma_recv_x,                                                \
-                  rdma_recv_count,                                            \
-                  rdma_x,                                                     \
-                  x,                                                          \
-                  topk_idx,                                                   \
-                  expertwise_scale,                                           \
-                  atomic_counter_per_expert,                                  \
-                  atomic_finish_counter_per_expert,                           \
-                  next_clean,                                                 \
-                  num_next_clean_int,                                         \
-                  num_tokens,                                                 \
-                  num_max_dispatch_tokens_per_rank,                           \
-                  num_topk,                                                   \
-                  num_experts,                                                \
-                  rank,                                                       \
-                  num_ranks,                                                  \
-                  phases);                                                    \
-  }                                                                           \
-  break
-
-  SETUP_LAUNCH_CONFIG(num_sms, num_warps * 32, stream);
-  SWITCH_HIDDEN(DISPATCH_LAUNCH_CASE);
-#undef DISPATCH_LAUNCH_CASE
+  DISPATCH_HIDDEN_SIZE(
+      hidden,
+      kHidden,
+      {DISPATCH_NUM_PER_CHANNEL(
+          num_per_channel,
+          kNumPerChannels,
+          {DISPATCH_NUM_WARP_GROUPS(num_warp_groups, kNumWarpGroups, {     // 1
+            constexpr int kNumWarpsPerGroup = NUM_WARPS / kNumWarpGroups;  // 32
+            EP_STATIC_ASSERT(
+                kNumMaxTopK + 1 <= kNumWarpGroups * kNumWarpsPerGroup,
+                "Too many top-k selections");
+            auto dispatch_func = use_fp8 ? dispatch<true,
+                                                    kNumWarpGroups,
+                                                    kNumWarpsPerGroup,
+                                                    kHidden,
+                                                    kNumPerChannels>
+                                         : dispatch<false,
+                                                    kNumWarpGroups,
+                                                    kNumWarpsPerGroup,
+                                                    kHidden,
+                                                    kNumPerChannels>;
+            SETUP_LAUNCH_CONFIG(
+                num_sms, kNumWarpGroups * kNumWarpsPerGroup * 32, stream);
+            LAUNCH_KERNEL(&cfg,
+                          dispatch_func,
+                          packed_recv_x,
+                          packed_recv_x_scales,
+                          packed_recv_src_info,
+                          packed_recv_layout_range,
+                          packed_recv_count,
+                          rdma_recv_x,
+                          rdma_recv_count,
+                          rdma_x,
+                          x,
+                          topk_idx,
+                          expertwise_scale,
+                          atomic_counter_per_expert,
+                          atomic_finish_counter_per_expert,
+                          next_clean,
+                          num_next_clean_int,
+                          num_tokens,
+                          num_max_dispatch_tokens_per_rank,
+                          num_topk,
+                          num_experts,
+                          rank,
+                          num_ranks,
+                          phases);
+          })})})
 }
 
 template <int kNumWarpGroups,
@@ -870,51 +993,53 @@ void combine(void* combined_x,
              cudaStream_t stream,
              int phases,
              bool zero_copy) {
-  constexpr int kNumWarpsPerGroup = 10;
-  constexpr int kNumWarpGroups = 3;
   constexpr int kNumMaxTopk = 9;
+  constexpr int NUM_WARPS = 32;
 
-  const auto num_warps = kNumWarpGroups * kNumWarpsPerGroup;
-  const auto num_sms = cell_div(num_experts, kNumWarpGroups);
+  const int dev_id = 0;
+  int sm_count;
+  cudaDeviceGetAttribute(&sm_count, cudaDevAttrMultiProcessorCount, dev_id);
+  const int num_warp_groups = cell_div(num_experts, sm_count);
+  const auto num_sms = max(sm_count, cell_div(num_experts, num_warp_groups));
 
   // Check workspace
   auto atomic_clean_flag = reinterpret_cast<int*>(workspace);
   EP_HOST_ASSERT(sizeof(int) <= NUM_WORKSPACE_BYTES);
   EP_HOST_ASSERT(num_topk <= kNumMaxTopk);
 
-#define COMBINE_LAUNCH_CASE(hidden)                                      \
-  {                                                                      \
-    auto combine_func =                                                  \
-        combine<kNumWarpGroups, kNumWarpsPerGroup, hidden, kNumMaxTopk>; \
-    LAUNCH_KERNEL(&cfg,                                                  \
-                  combine_func,                                          \
-                  combined_x,                                            \
-                  rdma_recv_x,                                           \
-                  rdma_recv_flag,                                        \
-                  rdma_send_x,                                           \
-                  x,                                                     \
-                  topk_idx,                                              \
-                  topk_weights,                                          \
-                  src_info,                                              \
-                  layout_range,                                          \
-                  next_clean,                                            \
-                  num_next_clean_int,                                    \
-                  atomic_clean_flag,                                     \
-                  num_combined_tokens,                                   \
-                  hidden,                                                \
-                  num_topk,                                              \
-                  num_max_dispatch_tokens_per_rank,                      \
-                  num_experts,                                           \
-                  rank,                                                  \
-                  num_ranks,                                             \
-                  phases,                                                \
-                  zero_copy);                                            \
-  }                                                                      \
-  break
-
-  SETUP_LAUNCH_CONFIG(num_sms, num_warps * 32, stream);
-  SWITCH_HIDDEN(COMBINE_LAUNCH_CASE);
-#undef COMBINE_LAUNCH_CASE
+  DISPATCH_HIDDEN_SIZE(
+      hidden,
+      kHidden,
+      {DISPATCH_NUM_WARP_GROUPS(num_warp_groups, kNumWarpGroups, {
+        constexpr int kNumWarpsPerGroup = NUM_WARPS / kNumWarpGroups;
+        auto combine_func =
+            combine<kNumWarpGroups, kNumWarpsPerGroup, kHidden, kNumMaxTopk>;
+        SETUP_LAUNCH_CONFIG(
+            num_sms, kNumWarpGroups * kNumWarpsPerGroup * 32, stream);
+        LAUNCH_KERNEL(&cfg,
+                      combine_func,
+                      combined_x,
+                      rdma_recv_x,
+                      rdma_recv_flag,
+                      rdma_send_x,
+                      x,
+                      topk_idx,
+                      topk_weights,
+                      src_info,
+                      layout_range,
+                      next_clean,
+                      num_next_clean_int,
+                      atomic_clean_flag,
+                      num_combined_tokens,
+                      hidden,
+                      num_topk,
+                      num_max_dispatch_tokens_per_rank,
+                      num_experts,
+                      rank,
+                      num_ranks,
+                      phases,
+                      zero_copy);
+      })})
 }
 
 }  // namespace internode_ll

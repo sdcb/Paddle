@@ -72,6 +72,7 @@ from ....symbolic_shape.constraints import (
 from ....symbolic_shape.operators import (
     symbolic_not,
     symbolic_to_bool,
+    symbolic_truediv,
 )
 from ....symbolic_shape.symbolic_value import (
     SymbolicBool,
@@ -92,6 +93,7 @@ from ....utils import (
     NameGenerator,
     SotCapturedExceptionFactory,
     UnsupportedOperationBreak,
+    get_min_non_specialized_number,
     get_tensor_methods,
     log,
     printable,
@@ -215,9 +217,9 @@ class ConstantVariable(VariableBase):
         return ConstantVariable(bool(self), self.graph, DummyTracker([self]))
 
     def bool_not(self):
-        assert isinstance(
-            self.get_py_value(), bool
-        ), "Bool_not can only be applied to a bool variable."
+        assert isinstance(self.get_py_value(), bool), (
+            "Bool_not can only be applied to a bool variable."
+        )
         return ConstantVariable(
             not bool(self.get_py_value()), self.graph, DummyTracker([self])
         )
@@ -286,9 +288,9 @@ class ConstantVariable(VariableBase):
         """
         if isinstance(value, ConstantVariable):
             return value
-        assert isinstance(
-            value, ConstTypes
-        ), f"value: {value},type: {type(value)}"
+        assert isinstance(value, ConstTypes), (
+            f"value: {value},type: {type(value)}"
+        )
         return ConstantVariable(value, graph, ConstTracker(value))
 
 
@@ -358,7 +360,6 @@ class TensorDtypeVariable(DataVariable):
             self.tracker.obj, TensorVariable
         ):
             expr_node = self.tracker.obj.tracker.guard_tree_expr_node()
-            assert paddle.framework.use_pir_api(), "Only support PIR"
             return [
                 paddle.framework.core.GuardNode(
                     paddle.framework.core.DtypeMatchGuard(self.value),
@@ -377,19 +378,6 @@ class TensorDtypeVariable(DataVariable):
                 self.tracker.obj.tracker.trace_value_from_frame()
             )
             dtype_str, dtype_free_vars = stringify_pyobject(self.value)
-            # TODO(cleanup-legacy-ir): Remove this branch after we remove legacy IR
-            if not paddle.framework.use_pir_api():
-                return [
-                    StringifiedExpression(
-                        f"MetaInfoOrNull.from_tensor({{}}).unwrap_unsafe().dtype == {dtype_str}",
-                        [tensor_value_tracer],
-                        union_free_vars(
-                            {"MetaInfoOrNull": MetaInfoOrNull},
-                            tensor_value_tracer.free_vars,
-                            dtype_free_vars,
-                        ),
-                    )
-                ]
             return [
                 FasterStringifiedExpression(
                     f"{{}}.dtype == {dtype_str}",
@@ -452,13 +440,13 @@ class TensorVariable(VariableBase):
         self.value = None
         self.meta = meta
         dynamic_axes: list[int] = []
+        self.var_name = self.var_name_generator.next()
         if (
             ENV_SOT_ALLOW_DYNAMIC_SHAPE.get()
             and self.tracker.is_traceable()
             and not self.meta.is_null()
         ):
             dynamic_axes = self.analyse_dynamic_axes(tracker)
-        self.var_name = self.var_name_generator.next()
         self.graph.side_effects.record_mutable_variable(self)
         self.meta = self.meta.with_dynamic_axes(self.var_name, dynamic_axes)
         self.origin_meta = self.meta
@@ -540,7 +528,6 @@ class TensorVariable(VariableBase):
 
     @check_faster_guard
     def make_faster_guard(self) -> list[paddle.framework.core.GuardNodeBase]:
-        assert paddle.framework.use_pir_api(), "Only support PIR"
         expr_node = self.tracker.guard_tree_expr_node()
         meta = self.origin_meta
         if meta.is_null():
@@ -550,11 +537,14 @@ class TensorVariable(VariableBase):
                     [expr_node],
                 ),
             ]
+        min_non_specialized_number = get_min_non_specialized_number()
         meta = meta.unwrap_unsafe()
         return [
             # Check shape
             paddle.framework.core.GuardNode(
-                paddle.framework.core.ShapeMatchGuard(meta.shape),
+                paddle.framework.core.ShapeMatchGuard(
+                    meta.shape, min_non_specialized_number
+                ),
                 [expr_node],
             ),
             # Check dtype
@@ -587,26 +577,6 @@ class TensorVariable(VariableBase):
     def make_stringified_guard(self) -> list[StringifiedExpression]:
         frame_value_tracer = self.tracker.trace_value_from_frame()
 
-        # TODO(cleanup-legacy-ir): Remove this branch after we remove legacy IR
-        if not paddle.framework.use_pir_api():
-            if (
-                ENV_SOT_ALLOW_DYNAMIC_SHAPE.get()
-                and not self.origin_meta.is_null()
-            ):
-                str_left_expr = f"MetaInfoOrNull.from_tensor({{}}, dynamic_axes={self.meta.unwrap_unsafe().dynamic_axes}).guard_str()"
-            else:
-                str_left_expr = "MetaInfoOrNull.from_tensor({}).guard_str()"
-            return [
-                StringifiedExpression(
-                    f"{str_left_expr} == '{self.origin_meta.guard_str()}'",
-                    [frame_value_tracer],
-                    union_free_vars(
-                        {"MetaInfoOrNull": MetaInfoOrNull},
-                        frame_value_tracer.free_vars,
-                    ),
-                )
-            ]
-
         # A quick check path for PIR, we don't need dtype conversion for AMP in PIR
         meta = self.origin_meta
         if meta.is_null():
@@ -617,6 +587,7 @@ class TensorVariable(VariableBase):
                     union_free_vars(frame_value_tracer.free_vars),
                 )
             ]
+        min_non_specialized_number = get_min_non_specialized_number()
         meta = meta.unwrap_unsafe()
         dtype_str, dtype_free_vars = stringify_pyobject(meta.dtype)
         guards = [
@@ -636,7 +607,7 @@ class TensorVariable(VariableBase):
                     )
                     if not isinstance(meta.shape[i], SymbolicInt)
                     else StringifiedExpression(
-                        f"{{}}.shape[{i}] >= 1",
+                        f"{{}}.shape[{i}] >= {min_non_specialized_number}",
                         [frame_value_tracer],
                         union_free_vars(frame_value_tracer.free_vars),
                     )
@@ -833,10 +804,10 @@ class TensorVariable(VariableBase):
                     f"Getting shape for a dynamic shape tensor causes graph break. shape = {meta.shape}"
                 )
             )
-        from .container import ListVariable
+        from .container import SizeVariable
 
         tracker = GetAttrTracker(self, "shape")
-        return ListVariable(meta.shape, self.graph, tracker=tracker)
+        return SizeVariable(meta.shape, self.graph, tracker=tracker)
 
     def len(self):
         meta = self.meta.unwrap_or_breakgraph()
@@ -1015,22 +986,23 @@ class SymbolicVariable(VariableBase):
         super().__init__(graph, tracker)
         self.var_name = self.var_name_generator.next()
         if isinstance(value_or_meta, MetaInfoOrNull):
-            assert (
-                not value_or_meta.is_null()
-            ), "MetaInfoOrNull should not be null"
+            assert not value_or_meta.is_null(), (
+                "MetaInfoOrNull should not be null"
+            )
             assert len(value_or_meta.unwrap_unsafe().shape) == 0
             self.value = get_symbolic_from_meta(value_or_meta)
             self.meta = value_or_meta
         else:
-            assert isinstance(
-                value_or_meta, SymbolicInt
-            ), f"Unsupported type {type(value_or_meta)} for SymbolicVariable"
+            assert isinstance(value_or_meta, SymbolicInt), (
+                f"Unsupported type {type(value_or_meta)} for SymbolicVariable"
+            )
             self.value = value_or_meta
             self.meta = MetaInfo(
                 [], paddle.int64, True, self.var_name, False, None, None
             ).wrap()
         self.need_guard_value = False
         self.graph.side_effects.record_mutable_variable(self)
+        min_non_specialized_number = get_min_non_specialized_number()
         self.constraints: list[SymbolicConstraint] = []
         if self.value.is_backed():
             # The inherent constraint of the symbolic variable is that it must be greater than or equal to 2.
@@ -1038,7 +1010,7 @@ class SymbolicVariable(VariableBase):
                 (
                     GreaterEqualConstraintNode(
                         SymbolicConstraintNode(self.var_name),
-                        ConstantConstraintNode(1),
+                        ConstantConstraintNode(min_non_specialized_number),
                     ),
                     {self.var_name: self},
                 )
@@ -1047,15 +1019,15 @@ class SymbolicVariable(VariableBase):
     def add_constraint(self, constraint: SymbolicConstraint):
         constraint_node, constraint_extern_vars = constraint
         for extern_var in constraint_extern_vars.values():
-            assert isinstance(
-                extern_var, SymbolicVariable
-            ), f"SymbolicVariable.add_constraint() got {extern_var}."
-            assert (
-                extern_var.value.is_backed()
-            ), "Only backed symbol is supported."
-            assert (
-                extern_var.tracker.is_traceable()
-            ), "Only traceable symbol is supported."
+            assert isinstance(extern_var, SymbolicVariable), (
+                f"SymbolicVariable.add_constraint() got {extern_var}."
+            )
+            assert extern_var.value.is_backed(), (
+                "Only backed symbol is supported."
+            )
+            assert extern_var.tracker.is_traceable(), (
+                "Only traceable symbol is supported."
+            )
         self.constraints.append(constraint)
 
     def to_constant(self):
@@ -1111,9 +1083,9 @@ class SymbolicVariable(VariableBase):
                 )
             )
         value = self.tracker.op(*input_values)
-        assert isinstance(
-            value, (bool, int, float)
-        ), f"SymbolicVariable.get_py_value() should return bool, int or float, but got {type(value)}"
+        assert isinstance(value, (bool, int, float)), (
+            f"SymbolicVariable.get_py_value() should return bool, int or float, but got {type(value)}"
+        )
         return value
 
     def get_example_value(
@@ -1141,9 +1113,9 @@ class SymbolicVariable(VariableBase):
                 )
             )
         value = self.tracker.op(*input_values)
-        assert isinstance(
-            value, (bool, int, float)
-        ), f"SymbolicVariable.get_example_value() should return bool, int or float, but got {type(value)}"
+        assert isinstance(value, (bool, int, float)), (
+            f"SymbolicVariable.get_example_value() should return bool, int or float, but got {type(value)}"
+        )
         return value
 
     def create_constraint_tree(
@@ -1156,9 +1128,9 @@ class SymbolicVariable(VariableBase):
         extern_vars = {}
         num_sym = 0
         for input in tracker.inputs:
-            assert isinstance(
-                input, (ConstantVariable, SymbolicVariable)
-            ), f"SymbolicVariable.create_constraint_tree() got {input}."
+            assert isinstance(input, (ConstantVariable, SymbolicVariable)), (
+                f"SymbolicVariable.create_constraint_tree() got {input}."
+            )
             if isinstance(input, ConstantVariable):
                 input_nodes.append(ConstantConstraintNode(input.get_py_value()))
             else:
@@ -1184,7 +1156,7 @@ class SymbolicVariable(VariableBase):
         elif tracker.op is operator.mul:
             assert len(input_nodes) == 2
             return MulConstraintNode(*input_nodes), extern_vars
-        elif tracker.op is operator.truediv:
+        elif tracker.op is symbolic_truediv:
             assert len(input_nodes) == 2
             return TrueDivConstraintNode(*input_nodes), extern_vars
         elif tracker.op is operator.floordiv:
@@ -1286,15 +1258,9 @@ class SymbolicVariable(VariableBase):
     @check_faster_guard
     def make_faster_guard(self) -> list[paddle.framework.core.GuardNodeBase]:
         assert ENV_SOT_ALLOW_DYNAMIC_SHAPE.get()
-        from ..executor_cache import OpcodeExecutorCache
 
         expr_node = self.tracker.guard_tree_expr_node()
         frame_value_tracer = self.tracker.trace_value_from_frame()
-        # TODO(zrr1999): symbolic_inputs need frame_value_tracer.inlined_expr
-        symbolic_inputs = OpcodeExecutorCache().get_symbolic_inputs(
-            self.graph.pycode_gen._origin_code
-        )
-        assert frame_value_tracer.inlined_expr in symbolic_inputs
 
         if self.need_guard_value:
             log(3, f"Need guard value for {self} in {expr_node}\n")
@@ -1323,16 +1289,9 @@ class SymbolicVariable(VariableBase):
     @check_guard
     def make_stringified_guard(self) -> list[StringifiedExpression]:
         assert ENV_SOT_ALLOW_DYNAMIC_SHAPE.get()
-        from ..executor_cache import OpcodeExecutorCache
-
         # NOTE(zrr1999): SymbolicVariable is not supported in faster guard mode
 
         frame_value_tracer = self.tracker.trace_value_from_frame()
-        symbolic_inputs = OpcodeExecutorCache().get_symbolic_inputs(
-            self.graph.pycode_gen._origin_code
-        )
-
-        assert frame_value_tracer.inlined_expr in symbolic_inputs
 
         if self.need_guard_value:
             log(3, f"Need guard value for {self} in {frame_value_tracer}\n")
@@ -1365,6 +1324,7 @@ class SymbolicVariable(VariableBase):
         symbolic_inputs: dict[str, dict[int, int] | None],
     ) -> bool | None:
         tracker_expr = tracker.trace_value_from_frame().inlined_expr
+        min_non_specialized_number = get_min_non_specialized_number()
         symbolic_inputs.setdefault(tracker_expr, {})
         if tracker_expr in symbolic_inputs:
             symbolic_input = symbolic_inputs[tracker_expr]
@@ -1372,9 +1332,9 @@ class SymbolicVariable(VariableBase):
                 return False
             symbolic_input.setdefault(value, 0)
             symbolic_input[value] += 1
-            if value == 0:
+            if value == 0 and ENV_SOT_ENABLE_0_SIZE_FALLBACK.get():
                 return None  # Fallback to dygraph
-            if value < 1:  # Specialize 0 and 1
+            if value < min_non_specialized_number:  # Specialize 0 or 1
                 return False
             if len(symbolic_input.keys()) > 1:
                 return True
@@ -1413,8 +1373,6 @@ class SymbolicVariable(VariableBase):
         if not ENV_SOT_ALLOW_DYNAMIC_SHAPE.get():
             return None
         if isinstance(value, SymbolicInt):
-            if value.is_backed():
-                return SymbolicVariable(value, graph, tracker)
             tensor_shape_source_result = (
                 SymbolicVariable.find_tensor_shape_source(tracker)
             )
@@ -1454,7 +1412,6 @@ class SymbolicVariable(VariableBase):
         )
         if (
             should_create_sym is None
-            and ENV_SOT_ENABLE_0_SIZE_FALLBACK.get()
             and SymbolicVariable.find_tensor_shape_source(tracker) is not None
         ):
             graph.add_global_guarded_variable(
@@ -1942,6 +1899,7 @@ class NumPyArrayVariable(NumPyVariable):
 
     @check_faster_guard
     def make_faster_guard(self) -> list[paddle.framework.core.GuardNodeBase]:
+        min_non_specialized_number = get_min_non_specialized_number()
         meta = self.meta.unwrap_unsafe()
         expr_node = self.tracker.guard_tree_expr_node()
         type_guard = paddle.framework.core.GuardNode(
@@ -1955,7 +1913,9 @@ class NumPyArrayVariable(NumPyVariable):
             [expr_node],
         )
         shape_guard = paddle.framework.core.GuardNode(
-            paddle.framework.core.NumPyArrayShapeMatchGuard(meta.shape),
+            paddle.framework.core.NumPyArrayShapeMatchGuard(
+                meta.shape, min_non_specialized_number
+            ),
             [expr_node],
         )
         return [type_guard, dtype_guard, shape_guard]
@@ -1973,6 +1933,7 @@ class NumPyArrayVariable(NumPyVariable):
             [frame_value_tracer],
             union_free_vars(frame_value_tracer.free_vars, {"np": np}),
         )
+        min_non_specialized_number = get_min_non_specialized_number()
 
         return [
             FasterStringifiedExpression(
@@ -1996,7 +1957,7 @@ class NumPyArrayVariable(NumPyVariable):
                     )
                     if not isinstance(meta.shape[i], SymbolicInt)
                     else StringifiedExpression(
-                        f"{{}}.shape[{i}] >= 1",
+                        f"{{}}.shape[{i}] >= {min_non_specialized_number}",
                         [frame_value_tracer],
                         union_free_vars(frame_value_tracer.free_vars),
                     )

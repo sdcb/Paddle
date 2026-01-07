@@ -19,19 +19,17 @@
 #include "paddle/fluid/framework/new_executor/interpreter/interpreter_util.h"
 #include "paddle/fluid/framework/new_executor/interpreter/static_build.h"
 #include "paddle/fluid/framework/operator.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/fluid/platform/profiler/supplement_tracing.h"
+#include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/kernel_context.h"
 #include "paddle/phi/core/os_info.h"
+#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #include "paddle/phi/core/platform/device/gpu/gpu_info.h"
 #include "paddle/phi/core/platform/profiler/event_tracing.h"
 #include "paddle/phi/core/sparse_coo_tensor.h"
 #include "paddle/phi/core/sparse_csr_tensor.h"
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
-#include "paddle/phi/backends/device_manager.h"
-#include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 #if defined(PADDLE_WITH_NCCL) || defined(PADDLE_WITH_RCCL) || \
     defined(PADDLE_WITH_CUSTOM_DEVICE)
 #include "paddle/common/flags.h"
@@ -48,7 +46,7 @@
 
 #endif
 
-PHI_DECLARE_bool(enable_host_event_recorder_hook);
+COMMON_DECLARE_bool(enable_host_event_recorder_hook);
 PD_DECLARE_bool(log_memory_stats);
 COMMON_DECLARE_string(static_runtime_data_save_path);
 COMMON_DECLARE_bool(save_static_runtime_data);
@@ -147,9 +145,9 @@ ProgramInterpreter::~ProgramInterpreter() {
   VLOG(4) << "~ProgramInterpreter(): " << this << " on " << place_;
 
 #ifdef PADDLE_WITH_DNNL
-  // Clear mkl-dnn cache,
-  // this is needed to have mkl-dnn unit tests working
-  platform::ClearMKLDNNCache(place_, this);
+  // Clear one-dnn cache,
+  // this is needed to have one-dnn unit tests working
+  platform::ClearONEDNNCache(place_, this);
 #endif
 }
 
@@ -250,7 +248,7 @@ void ProgramInterpreter::Build(
   CheckCUDAGraphBeforeRun(feed_names);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
 #endif
 
   if (!is_build_ || switch_stream) {
@@ -284,7 +282,7 @@ FetchList ProgramInterpreter::Run(
   CheckCUDAGraphBeforeRun(feed_names);
 
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
 #endif
 
   bool is_build = is_build_;

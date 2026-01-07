@@ -50,16 +50,30 @@ void InstanceNormKernel(const Context &dev_ctx,
                     5,
                     common::errors::InvalidArgument(
                         "The `shape` in InstanceNormOp is invalid: "
-                        "the size of X's dimensions must smaller than"
+                        "the size of X's dimensions must smaller than "
                         "or equal to 5. But received: "
                         "the size of X's dimensions is [%d]",
                         x_dims.size()));
   int N, C, H, W, D;
-  funcs::ExtractNCWHD(x_dims, DataLayout::kNCHW, &N, &C, &H, &W, &D);
+  funcs::ExtractNCWHD(x_dims, DataLayout::NCHW, &N, &C, &H, &W, &D);
   int NxC = N * C;
   DenseTensor x_tmp;
   x_tmp.ShareDataWith(x).Resize({1, NxC, H, W, D});
   dev_ctx.template Alloc<T>(y);
+  funcs::SetConstant<GPUContext, BatchNormParamType<T>> functor;
+  funcs::SetConstant<GPUContext, T> functor_y;
+  if (x.numel() == 0) {
+    functor_y(dev_ctx, y, static_cast<T>(0));
+    if (saved_mean) {
+      dev_ctx.template Alloc<BatchNormParamType<T>>(saved_mean);
+      functor(dev_ctx, saved_mean, static_cast<BatchNormParamType<T>>(0));
+    }
+    if (saved_variance) {
+      dev_ctx.template Alloc<BatchNormParamType<T>>(saved_variance);
+      functor(dev_ctx, saved_variance, static_cast<BatchNormParamType<T>>(0));
+    }
+    return;
+  }
 
 #ifdef PADDLE_WITH_HIP
   miopenTensorDescriptor_t data_desc_;
@@ -121,13 +135,16 @@ void InstanceNormKernel(const Context &dev_ctx,
   bias_tmp.Resize({NxC});
   dev_ctx.template Alloc<AccT>(&bias_tmp);
 
-  const int n = x.numel();
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t n = x.numel();
+
   const int block = 512;
   int max_threads = dev_ctx.GetMaxPhysicalThreadCount();
   const int max_blocks = std::max(max_threads / block, 1);
   const int grid = std::min((NxC + block - 1) / block, max_blocks);
 
-  phi::funcs::SetConstant<GPUContext, AccT> set_constant;
+  funcs::SetConstant<GPUContext, AccT> set_constant;
   if (scale_ptr) {
     repeat_param<AccT><<<grid, block, 0, dev_ctx.stream()>>>(
         scale_ptr->data<AccT>(), scale_tmp.data<AccT>(), N, C);
@@ -144,7 +161,6 @@ void InstanceNormKernel(const Context &dev_ctx,
   auto handle = dev_ctx.cudnn_handle();
 
   DenseTensor saved_mean_tmp, saved_variance_tmp;
-  phi::funcs::SetConstant<GPUContext, BatchNormParamType<T>> functor;
 
   if (saved_mean) {
     dev_ctx.template Alloc<BatchNormParamType<T>>(saved_mean);
@@ -233,7 +249,7 @@ PD_REGISTER_KERNEL(instance_norm,
                    ALL_LAYOUT,
                    phi::InstanceNormKernel,
                    float,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->InputAt(2).SetDataType(phi::DataType::FLOAT32);
@@ -246,8 +262,8 @@ PD_REGISTER_KERNEL(instance_norm,
                    phi::InstanceNormKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16 ||
       kernel_key.dtype() == phi::DataType::BFLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);
@@ -261,7 +277,7 @@ PD_REGISTER_KERNEL(instance_norm,
                    phi::InstanceNormKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16 ||
       kernel_key.dtype() == phi::DataType::BFLOAT16) {
     kernel->InputAt(1).SetDataType(phi::DataType::FLOAT32);

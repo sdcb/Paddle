@@ -27,7 +27,7 @@ void SoftmaxKernel(const Context& dev_ctx,
                    DenseTensor* out) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   const int rank = x.dims().size();
-  const int calc_axis = phi::funcs::CanonicalAxis(axis, rank);
+  const int calc_axis = funcs::CanonicalAxis(axis, rank);
 
   // allocate memory on device.
   dev_ctx.template Alloc<T>(out);
@@ -37,7 +37,7 @@ void SoftmaxKernel(const Context& dev_ctx,
   }
   // For 0D Tensor
   if (rank == 0) {
-    phi::funcs::set_constant(dev_ctx, out, static_cast<T>(1.0));
+    funcs::set_constant(dev_ctx, out, static_cast<T>(1.0));
     return;
   }
 
@@ -82,5 +82,5 @@ PD_REGISTER_KERNEL(softmax,
                    ALL_LAYOUT,
                    phi::SoftmaxKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

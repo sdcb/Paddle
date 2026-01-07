@@ -233,9 +233,7 @@ class LlamaMlp(nn.Layer):
         )
 
     def forward(self, x):
-        x = paddle.incubate.nn.functional.swiglu(
-            self.gate_proj(x), self.up_proj(x)
-        )
+        x = paddle.nn.functional.swiglu(self.gate_proj(x), self.up_proj(x))
         out = self.down_proj(x)
         return out
 
@@ -428,7 +426,6 @@ class LlamaModel(nn.Layer):
         hidden_states = inputs_embeds
 
         for idx, (decoder_layer) in enumerate(self.layers):
-
             layer_outputs = decoder_layer(
                 hidden_states,
                 position_ids,
@@ -505,7 +502,6 @@ class LlamaLMHead(paddle.nn.Layer):
 
 
 class LlamaForCausalLM(paddle.nn.Layer):
-
     def __init__(
         self,
         param_prefix="",
@@ -537,7 +533,6 @@ class LlamaForCausalLM(paddle.nn.Layer):
         attention_mask=None,
         labels=None,
     ):
-
         outputs = self.llama(
             input_ids,
             position_ids=position_ids,

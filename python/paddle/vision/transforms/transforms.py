@@ -377,19 +377,19 @@ class ToTensor(BaseTransform[_InputT, "Tensor"]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> from PIL import Image
             >>> import paddle
             >>> import paddle.vision.transforms as T
             >>> import paddle.vision.transforms.functional as F
 
-            >>> img_arr = ((paddle.rand((4, 5, 3)) * 255.).astype('uint8')).numpy()
+            >>> img_arr = ((paddle.rand((4, 5, 3)) * 255.0).astype('uint8')).numpy()
             >>> fake_img = Image.fromarray(img_arr)
             >>> transform = T.ToTensor()
             >>> tensor = transform(fake_img)
             >>> print(tensor.shape)
-            [3, 4, 5]
+            paddle.Size([3, 4, 5])
             >>> print(tensor.dtype)
             paddle.float32
     """
@@ -1347,20 +1347,20 @@ class RandomCrop(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
             :name: code-example1
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomCrop
             >>> transform = RandomCrop(224)
 
-            >>> fake_img = paddle.randint(0, 255, shape=(3, 324,300), dtype = 'int32')
+            >>> fake_img = paddle.randint(0, 255, shape=(3, 324, 300), dtype='int32')
             >>> print(fake_img.shape)
-            [3, 324, 300]
+            paddle.Size([3, 324, 300])
 
             >>> crop_img = transform(fake_img)
             >>> print(crop_img.shape)
-            [3, 224, 224]
+            paddle.Size([3, 224, 224])
     """
 
     size: Size2
@@ -1597,16 +1597,21 @@ class RandomAffine(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomAffine
 
-            >>> transform = RandomAffine([-90, 90], translate=[0.2, 0.2], scale=[0.5, 0.5], shear=[-10, 10])
+            >>> transform = RandomAffine(
+            ...     [-90, 90],
+            ...     translate=[0.2, 0.2],
+            ...     scale=[0.5, 0.5],
+            ...     shear=[-10, 10],
+            ... )
             >>> fake_img = paddle.randn((3, 256, 300)).astype(paddle.float32)
             >>> fake_img = transform(fake_img)
             >>> print(fake_img.shape)
-            [3, 256, 300]
+            paddle.Size([3, 256, 300])
     """
 
     degrees: float | list[float] | tuple[float, float]
@@ -1875,7 +1880,7 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> from paddle.vision.transforms import RandomPerspective
@@ -1884,7 +1889,7 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
             >>> fake_img = paddle.randn((3, 200, 150)).astype(paddle.float32)
             >>> fake_img = transform(fake_img)
             >>> print(fake_img.shape)
-            [3, 200, 150]
+            paddle.Size([3, 200, 150])
     """
 
     prob: float
@@ -1902,9 +1907,9 @@ class RandomPerspective(BaseTransform[_InputT, _RetT]):
     ) -> None:
         super().__init__(keys)
         assert 0 <= prob <= 1, "probability must be between 0 and 1"
-        assert (
-            0 <= distortion_scale <= 1
-        ), "distortion_scale must be between 0 and 1"
+        assert 0 <= distortion_scale <= 1, (
+            "distortion_scale must be between 0 and 1"
+        )
         assert interpolation in ['nearest', 'bilinear', 'bicubic']
         assert isinstance(fill, (numbers.Number, str, list, tuple))
 
@@ -2098,24 +2103,24 @@ class RandomErasing(BaseTransform[_InputT, _RetT]):
         keys: _TransformInputKeys | None = None,
     ) -> None:
         super().__init__(keys)
-        assert isinstance(
-            scale, (tuple, list)
-        ), "scale should be a tuple or list"
-        assert (
-            scale[0] >= 0 and scale[1] <= 1 and scale[0] <= scale[1]
-        ), "scale should be of kind (min, max) and in range [0, 1]"
-        assert isinstance(
-            ratio, (tuple, list)
-        ), "ratio should be a tuple or list"
-        assert (
-            ratio[0] >= 0 and ratio[0] <= ratio[1]
-        ), "ratio should be of kind (min, max)"
-        assert (
-            prob >= 0 and prob <= 1
-        ), "The probability should be in range [0, 1]"
-        assert isinstance(
-            value, (numbers.Number, str, tuple, list)
-        ), "value should be a number, tuple, list or str"
+        assert isinstance(scale, (tuple, list)), (
+            "scale should be a tuple or list"
+        )
+        assert scale[0] >= 0 and scale[1] <= 1 and scale[0] <= scale[1], (
+            "scale should be of kind (min, max) and in range [0, 1]"
+        )
+        assert isinstance(ratio, (tuple, list)), (
+            "ratio should be a tuple or list"
+        )
+        assert ratio[0] >= 0 and ratio[0] <= ratio[1], (
+            "ratio should be of kind (min, max)"
+        )
+        assert prob >= 0 and prob <= 1, (
+            "The probability should be in range [0, 1]"
+        )
+        assert isinstance(value, (numbers.Number, str, tuple, list)), (
+            "value should be a number, tuple, list or str"
+        )
         if isinstance(value, str) and value != "random":
             raise ValueError("value must be 'random' when type is str")
 

@@ -22,6 +22,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/graph_send_ue_recv_funcs.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/impl/graph_message_passing_impl.h"
 
 namespace phi {
@@ -115,7 +116,10 @@ void GraphSendUERecvOpKernelLaunchHelper(const Context& dev_ctx,
                                          int64_t out_size,
                                          DenseTensor* out,
                                          DenseTensor* dst_count = nullptr) {
-  const int& index_size = src_index.dims()[0];  // NOLINT
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = src_index.dims()[0];
+  // NOLINT
   auto out_dims = out->dims();
   int64_t memset_size = 1;
   std::vector<int64_t> dims_ = common::vectorize(out_dims);
@@ -174,7 +178,7 @@ void GraphSendUERecvOpKernelLaunchHelper(const Context& dev_ctx,
       for (int i = 0; i < input_size; i++) {
         if (dst_count_data[i] == 0) continue;
         auto out_slice = out->Slice(i, i + 1);
-        auto eigen_out = phi::EigenVector<T>::Flatten(out_slice);
+        auto eigen_out = EigenVector<T>::Flatten(out_slice);
         eigen_out = eigen_out / static_cast<T>(dst_count_data[i]);
       }
     }
@@ -256,6 +260,30 @@ void SendUERecvKernel(const Context& dev_ctx,
                       DenseTensor* dst_count) {
   auto index_type = src_index.dtype();
   auto& out_size_data = out_size.GetData();
+
+  if (x.numel() == 0 || y.numel() == 0 || src_index.numel() == 0 ||
+      dst_index.numel() == 0) {
+    std::vector<int64_t> dims_ = common::vectorize(out->dims());
+    if (out_size_data[0] <= 0) {
+      dims_[0] = x.dims()[0];
+    } else {
+      dims_[0] = out_size_data[0];
+    }
+    if (reduce_op == "MEAN") {
+      int64_t input_size =
+          out_size_data[0] <= 0 ? x.dims()[0] : out_size_data[0];
+      dst_count->Resize({input_size});
+    }
+    out->Resize(common::make_ddim(dims_));
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(out->dims())), 0, out);
+    phi::Full<int, Context>(dev_ctx,
+                            phi::IntArray(common::vectorize(dst_count->dims())),
+                            0,
+                            dst_count);
+    return;
+  }
+
   if (index_type == phi::DataType::INT32) {
     GraphSendUERecvOpKernelLaunchHelper<Context, T, int32_t>(dev_ctx,
                                                              x,

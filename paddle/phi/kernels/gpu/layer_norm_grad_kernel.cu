@@ -16,6 +16,8 @@
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/cast_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/layer_norm_impl.cu.h"
 #include "paddle/phi/kernels/funcs/layer_norm_util.h"
 
@@ -34,7 +36,32 @@ void LayerNormGradKernel(const Context &dev_ctx,
                          DenseTensor *x_grad,
                          DenseTensor *scale_grad,
                          DenseTensor *bias_grad) {
-  using U = phi::funcs::LayerNormParamType<T>;
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    if (scale_grad) {
+      phi::Full<T, Context>(
+          dev_ctx,
+          phi::IntArray(common::vectorize(scale_grad->dims())),
+          0,
+          scale_grad);
+      if (scale_opt.get_ptr() && x.dtype() != scale_opt.get().dtype()) {
+        phi::CastKernel<T, Context>(
+            dev_ctx, *scale_grad, scale_opt.get().dtype(), scale_grad);
+      }
+    }
+    if (bias_grad) {
+      phi::Full<T, Context>(dev_ctx,
+                            phi::IntArray(common::vectorize(bias_grad->dims())),
+                            0,
+                            bias_grad);
+      if (bias_opt.get_ptr() && x.dtype() != bias_opt.get().dtype()) {
+        phi::CastKernel<T, Context>(
+            dev_ctx, *bias_grad, bias_opt.get().dtype(), bias_grad);
+      }
+    }
+    return;
+  }
+  using U = funcs::LayerNormParamType<T>;
   // d_x, d_scale, d_bias may be nullptr
   auto *d_x = x_grad;
   auto *d_scale = scale_grad;
@@ -84,19 +111,18 @@ void LayerNormGradKernel(const Context &dev_ctx,
                            : dev_ctx.template Alloc<ScaleBiasT>(d_bias));   \
     auto *d_x_data =                                                        \
         (d_x == nullptr ? nullptr : dev_ctx.template Alloc<T>(d_x));        \
-    phi::funcs::LayerNormBackward<T, U, IsScaleBiasSameDTypeWithX>(         \
-        x_data,                                                             \
-        d_y_data,                                                           \
-        scale_data,                                                         \
-        mean_data,                                                          \
-        var_data,                                                           \
-        d_x_data,                                                           \
-        d_scale_data,                                                       \
-        d_bias_data,                                                        \
-        epsilon,                                                            \
-        batch_size,                                                         \
-        feature_size,                                                       \
-        dev_ctx);                                                           \
+    funcs::LayerNormBackward<T, U, IsScaleBiasSameDTypeWithX>(x_data,       \
+                                                              d_y_data,     \
+                                                              scale_data,   \
+                                                              mean_data,    \
+                                                              var_data,     \
+                                                              d_x_data,     \
+                                                              d_scale_data, \
+                                                              d_bias_data,  \
+                                                              epsilon,      \
+                                                              batch_size,   \
+                                                              feature_size, \
+                                                              dev_ctx);     \
   } while (0)
 
   if (scale_bias_dtype == x_dtype) {
@@ -117,7 +143,7 @@ PD_REGISTER_KERNEL(layer_norm_grad,
                    ALL_LAYOUT,
                    phi::LayerNormGradKernel,
                    float,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
@@ -130,8 +156,8 @@ PD_REGISTER_KERNEL(layer_norm_grad,
                    phi::LayerNormGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
@@ -144,7 +170,7 @@ PD_REGISTER_KERNEL(layer_norm_grad,
                    phi::LayerNormGradKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);

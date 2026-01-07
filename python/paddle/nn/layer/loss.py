@@ -19,6 +19,11 @@ from typing import TYPE_CHECKING, Callable
 import paddle
 from paddle import base, in_dynamic_mode
 from paddle.base.framework import in_dynamic_or_pir_mode
+from paddle.utils.decorator_utils import (
+    ParamAliasDecorator,
+    legacy_reduction_decorator,
+    legacy_reduction_special_decorator,
+)
 
 from .. import functional as F
 from .layers import Layer
@@ -31,6 +36,7 @@ if TYPE_CHECKING:
 
     from ..functional.loss import _ReduceMode
 
+from paddle.utils.decorator_utils import param_one_alias
 
 __all__ = []
 
@@ -119,6 +125,7 @@ class BCEWithLogitsLoss(Layer):
     pos_weight: Tensor | None
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         weight: Tensor | None = None,
@@ -416,6 +423,7 @@ class CrossEntropyLoss(Layer):
     label_smoothing: float
     name: str | None
 
+    @legacy_reduction_special_decorator
     def __init__(
         self,
         weight: Tensor | None = None,
@@ -437,6 +445,7 @@ class CrossEntropyLoss(Layer):
         self.label_smoothing = label_smoothing
         self.name = name
 
+    @ParamAliasDecorator({"label": ["target"]})
     def forward(self, input: Tensor, label: Tensor) -> Tensor:
         ret = paddle.nn.functional.cross_entropy(
             input,
@@ -653,6 +662,7 @@ class MSELoss(Layer):
 
     reduction: _ReduceMode
 
+    @legacy_reduction_decorator
     def __init__(self, reduction: _ReduceMode = 'mean'):
         super().__init__()
         if reduction not in ['sum', 'mean', 'none']:
@@ -756,6 +766,7 @@ class L1Loss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self, reduction: _ReduceMode = 'mean', name: str | None = None
     ) -> None:
@@ -846,6 +857,7 @@ class BCELoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         weight: Tensor | None = None,
@@ -958,6 +970,7 @@ class NLLLoss(Layer):
 
     """
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         weight: Tensor | None = None,
@@ -1046,6 +1059,7 @@ class PoissonNLLLoss(Layer):
 
     """
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         log_input: bool = True,
@@ -1129,7 +1143,7 @@ class KLDivLoss(Layer):
         output (Tensor): tensor with shape: [] by default.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn as nn
@@ -1142,25 +1156,25 @@ class KLDivLoss(Layer):
             >>> kldiv_criterion = nn.KLDivLoss(reduction='batchmean')
             >>> pred_loss = kldiv_criterion(x, target)
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'mean' reduction, loss shape will be []
             >>> kldiv_criterion = nn.KLDivLoss(reduction='mean')
             >>> pred_loss = kldiv_criterion(x, target)
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'sum' reduction, loss shape will be []
             >>> kldiv_criterion = nn.KLDivLoss(reduction='sum')
             >>> pred_loss = kldiv_criterion(x, target)
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'none' reduction, loss shape is same with X shape
             >>> kldiv_criterion = nn.KLDivLoss(reduction='none')
             >>> pred_loss = kldiv_criterion(x, target)
             >>> print(pred_loss.shape)
-            [5, 20]
+            paddle.Size([5, 20])
 
             >>> # if label is in the log space, set log_target = True
             >>> target = paddle.uniform(shape, min=0, max=10).astype('float32')
@@ -1177,6 +1191,7 @@ class KLDivLoss(Layer):
     reduction: _ReduceMode
     log_target: bool
 
+    @legacy_reduction_special_decorator
     def __init__(
         self, reduction: _ReduceMode = 'mean', log_target: bool = False
     ) -> None:
@@ -1249,6 +1264,7 @@ class MarginRankingLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         margin: float = 0.0,
@@ -1290,6 +1306,7 @@ class CTCLoss(Layer):
         - input_lengths (Tensor): The length for each input sequence, it should have shape [batch_size] and dtype int64.
         - label_lengths (Tensor): The length for each label sequence, it should have shape [batch_size] and dtype int64.
         - norm_by_times (bool, optional): Whether to normalize the gradients by the number of time-step, which is also the sequence's length. There is no need to normalize the gradients if reduction mode is 'mean'. Default: False.
+        - zero_infinity (bool, optional): If True, set infinite loss to zero. Default: False.
 
     Returns:
         Tensor, The Connectionist Temporal Classification (CTC) loss between ``log_probs`` and  ``labels``. If attr:`reduction` is ``'none'``, the shape of loss is [batch_size], otherwise, the shape of loss is []. Data type is the same as ``log_probs``.
@@ -1338,10 +1355,16 @@ class CTCLoss(Layer):
     blank: int
     reduction: _ReduceMode
 
-    def __init__(self, blank: int = 0, reduction: _ReduceMode = 'mean') -> None:
+    def __init__(
+        self,
+        blank: int = 0,
+        reduction: _ReduceMode = 'mean',
+        zero_infinity: bool = False,
+    ) -> None:
         super().__init__()
         self.blank = blank
         self.reduction = reduction
+        self.zero_infinity = zero_infinity
 
     def forward(
         self,
@@ -1359,6 +1382,7 @@ class CTCLoss(Layer):
             self.blank,
             self.reduction,
             norm_by_times=norm_by_times,
+            zero_infinity=self.zero_infinity,
         )
 
 
@@ -1514,6 +1538,7 @@ class SmoothL1Loss(Layer):
     delta: float
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         reduction: _ReduceMode = 'mean',
@@ -1527,6 +1552,7 @@ class SmoothL1Loss(Layer):
         self.is_huber = is_huber
         self.name = name
 
+    @param_one_alias(["label", "target"])
     def forward(self, input: Tensor, label: Tensor) -> Tensor:
         return F.smooth_l1_loss(
             input,
@@ -1602,6 +1628,7 @@ class MultiLabelSoftMarginLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         weight: Tensor | None = None,
@@ -1675,7 +1702,7 @@ class HingeEmbeddingLoss(Layer):
 
     Shape:
 
-        input: N-D Tensor, the shape is [N, \*], N is batch size and `\*` means any number of additional dimensions, available dtype is float32, float64. The sum operationoperates over all the elements.
+        input: N-D Tensor, the shape is [N, \*], N is batch size and `\*` means any number of additional dimensions, available dtype is float32, float64. The sum operation operates over all the elements.
 
         label: N-D Tensor, same shape as the input.
 
@@ -1714,6 +1741,7 @@ class HingeEmbeddingLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         margin: float = 1.0,
@@ -1812,6 +1840,7 @@ class CosineEmbeddingLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         margin: float = 0,
@@ -2049,6 +2078,7 @@ class TripletMarginLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         margin: float = 1.0,
@@ -2165,6 +2195,7 @@ class MultiMarginLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self,
         p: int = 1,
@@ -2192,6 +2223,93 @@ class MultiMarginLoss(Layer):
             p=self.p,
             margin=self.margin,
             weight=self.weight,
+            reduction=self.reduction,
+            name=self.name,
+        )
+
+
+class MultiLabelMarginLoss(Layer):
+    r"""Creates a criterion that optimizes a multi-class multi-classification hinge loss (margin-based loss)
+    between input :math:`input` and label :math:`label`:
+
+    For i-th mini-batch sample, the loss in terms of the 2D input :math:`input_i` and 2D label :math:`label_i` is:
+
+    .. math::
+        \text{loss}(input_i, label_i) = \frac{\sum_{j \in \text{valid_labels}} \sum_{k \neq \text{valid_labels}} \max(0, 1 - (input_i[\text{valid_labels}[j]] - input_i[k]))}{C}
+
+    where :math:`C` is the number of classes, :math:`\text{valid_labels}` contains all non-negative label indices
+    for sample :math:`i` (stopping at the first -1 encountered), and :math:`k` ranges over all class indices
+    except those in :math:`\text{valid_labels}`.
+
+    The criterion only considers the first non-negative label values, allowing different samples to have variable numbers of target classes.
+
+    Parameters:
+
+        reduction (str, optional): Indicate how to calculate the loss by batch_size,
+                the candidates are ``'none'`` | ``'mean'`` | ``'sum'``.
+                If :attr:`reduction` is ``'none'``, the unreduced loss is returned;
+                If :attr:`reduction` is ``'mean'``, the reduced mean loss is returned;
+                If :attr:`reduction` is ``'sum'``, the summed loss is returned.
+                Default: ``'mean'``
+
+        name (str|None, optional): Name for the operation (optional, default is None).
+            For more information, please refer to :ref:`api_guide_Name`.
+
+    Call parameters:
+        input (Tensor): Input tensor, the data type is float32 or float64.
+
+        label (Tensor): Label tensor, the data type is int32 or int64.
+            Label values should be class indices (non-negative values) and -1 values.
+            The -1 values are ignored and stop processing for each sample.
+
+    Shape:
+        input: 2-D Tensor, the shape is :math:`[N, C]`, where :math:`N` is batch size and :math:`C` is number of classes.
+
+        label: 2-D Tensor, the shape is :math:`[N, C]`, same shape as input.
+
+        output: scalar. If :attr:`reduction` is ``'none'``, then same shape as :math:`[N]`.
+
+    Returns:
+        A callable object of MultiLabelMarginLoss.
+
+    Examples:
+        .. code-block:: python
+
+            >>> import paddle
+            >>> import paddle.nn as nn
+
+            >>> input = paddle.to_tensor([[0.1, 0.2, 0.4, 0.8], [0.2, 0.5, 0.3, 0.1]], dtype='float32')
+            >>> label = paddle.to_tensor([[3, 0, -1, -1], [0, 2, -1, -1]], dtype='int64')
+
+            >>> multi_label_margin_loss = nn.MultiLabelMarginLoss(reduction='mean')
+            >>> loss = multi_label_margin_loss(input, label)
+            >>> print(loss)
+            Tensor(shape=[], dtype=float32, place=Place(cpu), stop_gradient=True,
+                   0.94999999)
+    """
+
+    reduction: _ReduceMode
+    name: str | None
+
+    @legacy_reduction_decorator
+    def __init__(
+        self,
+        reduction: _ReduceMode = 'mean',
+        name: str | None = None,
+    ) -> None:
+        super().__init__()
+        if reduction not in ['sum', 'mean', 'none']:
+            raise ValueError(
+                "'reduction' in 'MultiLabelMarginLoss' should be 'sum', 'mean' or 'none', "
+                f"but received {reduction}."
+            )
+        self.reduction = reduction
+        self.name = name
+
+    def forward(self, input: Tensor, label: Tensor) -> Tensor:
+        return F.multi_label_margin_loss(
+            input,
+            label,
             reduction=self.reduction,
             name=self.name,
         )
@@ -2262,6 +2380,7 @@ class SoftMarginLoss(Layer):
     reduction: _ReduceMode
     name: str | None
 
+    @legacy_reduction_decorator
     def __init__(
         self, reduction: _ReduceMode = 'mean', name: str | None = None
     ) -> None:

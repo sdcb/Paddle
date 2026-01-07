@@ -15,14 +15,17 @@
 from ..base.framework import require_version
 from . import (  # noqa: F401
     cpp_extension,
+    decorator_utils,
     dlpack,
     download,
     image_util,
     layers_utils,
     unique_name,
 )
+from .bwd_graph_utils import capture_backward_subgraph_guard  # noqa: F401
 from .deprecated import deprecated
 from .environments import strtobool as strtobool
+from .fwd_graph_utils import capture_forward_subgraph_guard  # noqa: F401
 from .install_check import run_check
 from .layers_utils import (  # noqa: F401
     _contain_var,

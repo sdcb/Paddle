@@ -32,6 +32,10 @@ void TriangularSolveKernel(const Context& dev_ctx,
                            bool transpose,
                            bool unitriangular,
                            DenseTensor* out) {
+  if (x.numel() == 0 || y.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   // get broadcast dim
   std::vector<int64_t> x_bst_dims_vec;
   std::vector<int64_t> y_bst_dims_vec;
@@ -42,7 +46,7 @@ void TriangularSolveKernel(const Context& dev_ctx,
 
   // Tensor broadcast to 'out' and temp 'x_bst'
   IntArray x_bst_dims(x_bst_dims_vec);
-  DenseTensor x_bst = phi::Empty<T, Context>(dev_ctx, x_bst_dims);
+  DenseTensor x_bst = Empty<T, Context>(dev_ctx, x_bst_dims);
   const T* x_bst_data = x_bst.data<T>();
   ExpandKernel<T, Context>(dev_ctx, x, x_bst_dims, &x_bst);
 
@@ -59,7 +63,7 @@ void TriangularSolveKernel(const Context& dev_ctx,
     batch_size *= static_cast<int>(x_bst_dims_vec[i]);
   }
 
-  auto blas = phi::funcs::GetBlas<CPUContext, T>(dev_ctx);
+  auto blas = funcs::GetBlas<CPUContext, T>(dev_ctx);
   for (int i = 0; i < batch_size; i++) {
     blas.TRSM(CblasLeft,
               upper ? CblasUpper : CblasLower,
@@ -83,5 +87,5 @@ PD_REGISTER_KERNEL(triangular_solve,
                    phi::TriangularSolveKernel,
                    float,
                    double,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

@@ -47,14 +47,14 @@ class MatrixReduceSumFunctor<T, CPUContext> {
         out_reduce_dims.push_back(static_cast<int>(idx));
       }
     }
-    ReduceKernelImpl<CPUContext, T, T, phi::funcs::SumFunctor>(
+    ReduceKernelImpl<CPUContext, T, T, funcs::SumFunctor>(
         dev_ctx, in, out, out_reduce_dims, true, false);
   }
 };
 
 template class MatrixReduceSumFunctor<float, CPUContext>;
 template class MatrixReduceSumFunctor<double, CPUContext>;
-template class MatrixReduceSumFunctor<phi::dtype::complex<float>, CPUContext>;
-template class MatrixReduceSumFunctor<phi::dtype::complex<double>, CPUContext>;
+template class MatrixReduceSumFunctor<phi::complex64, CPUContext>;
+template class MatrixReduceSumFunctor<phi::complex128, CPUContext>;
 
 }  // namespace phi::funcs

@@ -23,16 +23,16 @@
 
 namespace paddle::framework::ir {
 
-void ComputePropagateScalesMkldnnPass::GetTensorFromVector(
+void ComputePropagateScalesOnednnPass::GetTensorFromVector(
     const std::vector<float>& data_v, phi::DenseTensor* tensor) const {
   const int size = static_cast<int>(data_v.size());
-  auto* data = tensor->mutable_data<float>({size}, phi::CPUPlace());
+  auto* data = tensor->mutable_data<float>({size}, CPUPlace());
   for (int i = 0; i < size; i++) {
     data[i] = data_v[i];
   }
 }
 
-void ComputePropagateScalesMkldnnPass::GetQuantInfo(
+void ComputePropagateScalesOnednnPass::GetQuantInfo(
     ir::Graph* graph, StringPairMap* var_quant_scales) const {
   std::unordered_map<std::string, std::vector<float>> info_map{};
   GetInfoFromTheTmpOp(graph, "has_quant_info", "var_quant_scales", &info_map);
@@ -45,7 +45,7 @@ void ComputePropagateScalesMkldnnPass::GetQuantInfo(
   }
 }
 
-std::vector<float> ComputePropagateScalesMkldnnPass::GetScales(
+std::vector<float> ComputePropagateScalesOnednnPass::GetScales(
     phi::DenseTensor* tensor, int axis) const {
   PADDLE_ENFORCE_LT(axis,
                     2,
@@ -89,7 +89,7 @@ std::vector<float> ComputePropagateScalesMkldnnPass::GetScales(
   return scales;
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeVarScales(
+void ComputePropagateScalesOnednnPass::ComputeVarScales(
     ir::Graph* graph,
     Scope* scope,
     const std::unordered_set<std::string>& ops,
@@ -121,7 +121,7 @@ void ComputePropagateScalesMkldnnPass::ComputeVarScales(
       std::vector<int64_t> reshape_dims = {dims[0], volume};
       tmp_tensor.Resize(common::make_ddim(reshape_dims));
       auto* weight_data = weight_tensor->data<float>();
-      auto* tmp_data = tmp_tensor.mutable_data<float>(phi::CPUPlace());
+      auto* tmp_data = tmp_tensor.mutable_data<float>(CPUPlace());
       for (int i = 0; i < weight_tensor->numel(); i++) {
         tmp_data[i] = std::abs(weight_data[i]);
       }
@@ -135,7 +135,7 @@ void ComputePropagateScalesMkldnnPass::ComputeVarScales(
   }
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeSingleGruWeightScales(
+void ComputePropagateScalesOnednnPass::ComputeSingleGruWeightScales(
     Scope* scope,
     const std::string& wx_var_name,
     const std::string& wh_var_name,
@@ -153,7 +153,10 @@ void ComputePropagateScalesMkldnnPass::ComputeSingleGruWeightScales(
 
   const auto* wx_tensor = wx_var->GetMutable<phi::DenseTensor>();
   const auto* wh_tensor = wh_var->GetMutable<phi::DenseTensor>();
-  const int OC = wh_tensor->dims()[0];
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t OC = wh_tensor->dims()[0];
+
   std::vector<float> scale_ur(2 * OC);
   std::vector<float> scale_o(OC);
   for (int row_id = 0; row_id < wx_tensor->dims()[0]; row_id++) {
@@ -199,7 +202,7 @@ void ComputePropagateScalesMkldnnPass::ComputeSingleGruWeightScales(
   GetTensorFromVector(scale_ur, tensor);
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeGruWeightScales(
+void ComputePropagateScalesOnednnPass::ComputeGruWeightScales(
     ir::Graph* graph,
     Scope* scope,
     const std::string& wx_name,
@@ -234,7 +237,7 @@ void ComputePropagateScalesMkldnnPass::ComputeGruWeightScales(
   }
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeSingleLstmWeightScales(
+void ComputePropagateScalesOnednnPass::ComputeSingleLstmWeightScales(
     Scope* scope,
     const std::string& wx_var_name,
     const std::string& wh_var_name,
@@ -277,7 +280,7 @@ void ComputePropagateScalesMkldnnPass::ComputeSingleLstmWeightScales(
   GetTensorFromVector(scale, tensor);
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeLstmWeightScales(
+void ComputePropagateScalesOnednnPass::ComputeLstmWeightScales(
     ir::Graph* graph,
     Scope* scope,
     const std::string& wx_name,
@@ -313,7 +316,7 @@ void ComputePropagateScalesMkldnnPass::ComputeLstmWeightScales(
   }
 }
 
-void ComputePropagateScalesMkldnnPass::ComputeWeightScales(
+void ComputePropagateScalesOnednnPass::ComputeWeightScales(
     ir::Graph* graph, Scope* scope, StringPairMap* var_quant_scales) const {
   ComputeVarScales(graph,
                    scope,
@@ -334,7 +337,7 @@ void ComputePropagateScalesMkldnnPass::ComputeWeightScales(
   ComputeLstmWeightScales(graph, scope, "WeightX", "WeightH", var_quant_scales);
 }
 
-void ComputePropagateScalesMkldnnPass::UpdateScaleOpInOutScales(
+void ComputePropagateScalesOnednnPass::UpdateScaleOpInOutScales(
     Node* op_node,
     const std::string& input_name,
     const std::string& output_name,
@@ -363,7 +366,7 @@ void ComputePropagateScalesMkldnnPass::UpdateScaleOpInOutScales(
   auto pair = iter->second;
   const auto tensor = pair.second;
   tmp_tensor.Resize(tensor.dims());
-  auto* data = tmp_tensor.mutable_data<float>(phi::CPUPlace());
+  auto* data = tmp_tensor.mutable_data<float>(CPUPlace());
   auto* src_data = tensor.data<float>();
   for (int i = 0; i < tensor.numel(); i++) {
     if (out_iter != var_quant_scales->end()) {
@@ -376,7 +379,7 @@ void ComputePropagateScalesMkldnnPass::UpdateScaleOpInOutScales(
   var_quant_scales->insert(std::make_pair(name, new_pair));
 }
 
-std::unordered_set<std::string> ComputePropagateScalesMkldnnPass::UpdateScales(
+std::unordered_set<std::string> ComputePropagateScalesOnednnPass::UpdateScales(
     ir::Graph* graph,
     StringPairMap* var_quant_scales,
     const std::unordered_set<std::string>& scale_immutable_ops) const {
@@ -432,7 +435,7 @@ std::unordered_set<std::string> ComputePropagateScalesMkldnnPass::UpdateScales(
   }
   return waiting_for_scale;
 }
-void ComputePropagateScalesMkldnnPass::UpdateReluOutputScales(
+void ComputePropagateScalesOnednnPass::UpdateReluOutputScales(
     ir::Graph* graph, StringPairMap* var_quant_scales) const {
   for (auto* op_node :
        ir::TopologyVariantSort(*graph, static_cast<ir::SortKind>(0))) {
@@ -467,7 +470,7 @@ void ComputePropagateScalesMkldnnPass::UpdateReluOutputScales(
   }
 }
 
-void ComputePropagateScalesMkldnnPass::PropagateScales(
+void ComputePropagateScalesOnednnPass::PropagateScales(
     ir::Graph* graph,
     StringPairMap* var_quant_scales,
     const std::unordered_set<std::string>& scale_immutable_ops) const {
@@ -484,7 +487,7 @@ void ComputePropagateScalesMkldnnPass::PropagateScales(
   }
 }
 
-void ComputePropagateScalesMkldnnPass::ApplyImpl(ir::Graph* graph) const {
+void ComputePropagateScalesOnednnPass::ApplyImpl(ir::Graph* graph) const {
   VLOG(3) << "Convert paddle model to onednn quantized model.";
   const std::string pattern_name = "compute_propagate_scales_onednn_pass";
   FusePassBase::Init(pattern_name, graph);
@@ -517,7 +520,7 @@ void ComputePropagateScalesMkldnnPass::ApplyImpl(ir::Graph* graph) const {
 }  // namespace paddle::framework::ir
 
 REGISTER_PASS(compute_propagate_scales_onednn_pass,
-              paddle::framework::ir::ComputePropagateScalesMkldnnPass);
+              paddle::framework::ir::ComputePropagateScalesOnednnPass);
 
 REGISTER_PASS_CAPABILITY(compute_propagate_scales_onednn_pass)
     .AddCombination(

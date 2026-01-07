@@ -56,13 +56,13 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
   unsigned int grid_size = num_rows < maxGridDimX
                                ? static_cast<unsigned int>(num_rows)
                                : maxGridDimX;
-  phi::funcs::InitIndex<int64_t><<<grid_size, block_size, 0, cu_stream>>>(
+  funcs::InitIndex<int64_t><<<grid_size, block_size, 0, cu_stream>>>(
       input_indices.data<int64_t>(), num_rows, num_cols);
   cub::CountingInputIterator<int64_t> counting_iter(0);
   cub::TransformInputIterator<int64_t,
-                              phi::funcs::SegmentOffsetIter,
+                              funcs::SegmentOffsetIter,
                               cub::CountingInputIterator<int64_t>>
-      segment_offsets_t(counting_iter, phi::funcs::SegmentOffsetIter(num_cols));
+      segment_offsets_t(counting_iter, funcs::SegmentOffsetIter(num_cols));
   T* sorted_values_ptr;
   int64_t* sorted_indices_ptr;
   DenseTensor temp_values, temp_indices;
@@ -158,14 +158,11 @@ bool SortKthvalue(const phi::GPUContext& dev_ctx,
 template <typename T, typename Context>
 void KthvalueKernel(const Context& dev_ctx,
                     const DenseTensor& x,
-                    int k,
+                    int64_t k,
                     int axis,
                     bool keepdim,
                     DenseTensor* output,
                     DenseTensor* indices) {
-  // TODO(cangtianhuang): support int64_t k
-  k = static_cast<int64_t>(k);
-
   if (x.numel() == 0) {
     phi::Full<T, Context>(
         dev_ctx, phi::IntArray(common::vectorize(output->dims())), NAN, output);
@@ -186,11 +183,11 @@ void KthvalueKernel(const Context& dev_ctx,
                       1,
                       common::errors::InvalidArgument(
                           "the k in the kthvalue must less equal than the "
-                          "elements number of the input X, but received %d .",
+                          "elements number of the input X, but received %lld .",
                           k));
 
-    phi::Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
-    phi::funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
+    Copy<Context>(dev_ctx, x, dev_ctx.GetPlace(), false, output);
+    funcs::set_constant(dev_ctx, indices, static_cast<int64_t>(0));
     return;
   }
 
@@ -322,7 +319,7 @@ PD_REGISTER_KERNEL(kthvalue,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {
+                   phi::bfloat16,
+                   phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::INT64);
 }

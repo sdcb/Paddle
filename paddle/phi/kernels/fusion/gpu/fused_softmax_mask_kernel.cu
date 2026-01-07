@@ -16,6 +16,7 @@
 
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/fused_softmax_mask_kernel.h"
 #include "paddle/phi/kernels/fusion/gpu/fused_softmax_mask_utils.h"
 
 namespace phi {
@@ -53,15 +54,21 @@ __global__ void SoftmaxMaskFuseV1GPUKernel(const T* x_data,
   constexpr int kLocalBatchSize = (next_pow2 <= 128) ? 2 : 1;
   constexpr int kOneLoadingCounts = 4;
 
-  int data_first_idx =
-      (blockDim.y *
-           (blockIdx.x + gridDim.x * (blockIdx.y + gridDim.y * blockIdx.z)) +
-       threadIdx.y) *
-      kLocalBatchSize;
+  int64_t data_first_idx = (static_cast<int64_t>(blockDim.y) *
+                                (static_cast<int64_t>(blockIdx.x) +
+                                 static_cast<int64_t>(gridDim.x) *
+                                     (static_cast<int64_t>(blockIdx.y) +
+                                      static_cast<int64_t>(gridDim.y) *
+                                          static_cast<int64_t>(blockIdx.z))) +
+                            static_cast<int64_t>(threadIdx.y)) *
+                           kLocalBatchSize;
 
-  int mask_fist_idx =
-      (blockDim.y * (blockIdx.x + gridDim.x * blockIdx.z) + threadIdx.y) *
-      kLocalBatchSize;
+  int64_t mask_fist_idx = (static_cast<int64_t>(blockDim.y) *
+                               (static_cast<int64_t>(blockIdx.x) +
+                                static_cast<int64_t>(gridDim.x) *
+                                    static_cast<int64_t>(blockIdx.z)) +
+                           static_cast<int64_t>(threadIdx.y)) *
+                          kLocalBatchSize;
 
   // batch_count might not be a multiple of kLocalBatchSize. Check how
   // many batches have to computed within this WARP.
@@ -479,6 +486,7 @@ void FusedSoftmaxMaskKernel(const Context& dev_ctx,
                             DenseTensor* out) {
   auto* x_data = x.data<T>();
   auto* y_data = dev_ctx.template Alloc<T>(out);
+  if (out && out->numel() == 0) return;
 
   auto x_dim = x.dims();
   auto mask_dim = mask.dims();
@@ -593,4 +601,4 @@ PD_REGISTER_KERNEL(fused_softmax_mask,
                    ALL_LAYOUT,
                    phi::fusion::FusedSoftmaxMaskKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

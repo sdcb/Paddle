@@ -16,128 +16,22 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, overload
 
-import numpy as np
-
 import paddle
 import paddle.nn.functional as F
 from paddle import _C_ops
 from paddle.base.framework import in_dynamic_or_pir_mode
 from paddle.base.layer_helper import LayerHelper
 from paddle.base.wrapped_decorator import signature_safe_contextmanager
-from paddle.device.cuda import get_device_capability
-
-g_enable_math = None
-g_enable_flash = None
-g_enable_mem_efficient = None
+from paddle.nn.attention.sdpa import (
+    SDPBackend,
+    _get_enabled_backends,
+    sdpa_kernel,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
     from paddle import Tensor
-
-
-def _get_arch_info():
-    # Get SMVersion from device.
-    cuda_version = paddle.version.cuda()
-    if (
-        cuda_version is not None and cuda_version != 'False'
-    ) or paddle.is_compiled_with_rocm():
-        major, minor = get_device_capability()
-        arch = int(major * 10 + minor)
-        return arch
-    else:
-        raise ValueError(
-            "Paddle is not compiled with CUDA, we cannot get SMVersion from device, please try to compile Paddle with CUDA"
-        )
-
-
-def check_flash_head_dim_constraints(query, dropout_p=0.0):
-    arch = _get_arch_info()
-    is_sm86_to_sm89 = 86 <= arch <= 89
-
-    if not is_sm86_to_sm89:
-        return True
-
-    head_dim = query.shape[-1]
-    requires_grad = not query.stop_gradient
-
-    if not requires_grad:
-        return True
-
-    is_head_dim_gt192 = head_dim > 192
-    is_head_dim_lte224 = head_dim <= 224
-    is_dropout = dropout_p > 0.0
-
-    cond1 = is_head_dim_gt192 and is_head_dim_lte224
-    cond2 = head_dim > 224 and is_dropout
-
-    if cond1 or cond2:
-        return False
-    return True
-
-
-def check_flash_causal_non_square_seqlens(query, key, is_causal=False):
-    if not is_causal:
-        return True
-
-    seqlen_q = query.shape[-3]
-    seqlen_k = key.shape[-3]
-
-    if seqlen_q != seqlen_k:
-        return False
-    return True
-
-
-def check_dtypes_low_precision(query, debug=False):
-    arch = _get_arch_info()
-    dtype = query.dtype
-
-    if arch >= 80:
-        supported_dtypes = [paddle.float16, paddle.bfloat16]
-    else:
-        supported_dtypes = [paddle.float16]
-
-    return dtype in supported_dtypes
-
-
-def can_use_flash_attn(query, key, attn_mask, dropout, is_causal) -> bool:
-    # sdpa flash check
-    # step1 check tensor place on cuda
-    # step2 check tensor shape, flash attn only support shape == 4
-    # step3 check head_dim <= 256
-    # step4 check arch_info > sm80
-    # step5 check specify sm head dim constraint
-    # step6 check causal qk
-    # step7 check sm dtype support
-    if "gpu" not in paddle.get_device():
-        return False
-    if query.ndim != 4:
-        return False
-    if query.shape[-1] > 256:
-        return False
-    if _get_arch_info() < 80:
-        return False
-    if not check_flash_head_dim_constraints(query, dropout):
-        return False
-    if not check_flash_causal_non_square_seqlens(query, key, is_causal):
-        return False
-    if not check_dtypes_low_precision(query):
-        return False
-    return True
-
-
-def can_use_efficient(query) -> bool:
-    # sdpa efficient check
-    # step1 check tensor place on cuda
-    # step2 check arch_info in [sm50, sm90]
-    # step3 check tensor shape, mem efficient only support shape == 4
-    if "gpu" not in paddle.get_device():
-        return False
-    if _get_arch_info() < 50 and _get_arch_info() > 90:
-        return False
-    if query.ndim != 4:
-        return False
-    return True
 
 
 @signature_safe_contextmanager
@@ -150,20 +44,22 @@ def sdp_kernel(
     With the sdp_kernel context manager, different algorithm implementations can
     be selected for scaled_dot_product_attention.
     """
-    global g_enable_math, g_enable_flash, g_enable_mem_efficient
-    original_enable_math = g_enable_math
-    original_enable_flash = g_enable_math
-    original_enable_mem_efficient = g_enable_mem_efficient
+    backend_list = []
+    if enable_flash:
+        backend_list.append(SDPBackend.FLASH_ATTENTION)
+    if enable_mem_efficient:
+        backend_list.append(SDPBackend.EFFICIENT_ATTENTION)
+    if enable_math:
+        backend_list.append(SDPBackend.MATH)
 
-    g_enable_math = enable_math
-    g_enable_flash = enable_flash
-    g_enable_mem_efficient = enable_mem_efficient
-    try:
-        yield
-    finally:
-        g_enable_math = original_enable_math
-        g_enable_flash = original_enable_flash
-        g_enable_mem_efficient = original_enable_mem_efficient
+    if not backend_list:
+        raise ValueError("At least one backend must be enabled")
+
+    with sdpa_kernel(backend_list) as context:
+        try:
+            yield context
+        finally:
+            pass
 
 
 # special for XPU device
@@ -185,6 +81,7 @@ def _math_attention(
     causal: bool = ...,
     return_softmax: Literal[False] = ...,
     training: bool = ...,
+    scale: float | None = ...,
 ) -> tuple[Tensor, None]: ...
 
 
@@ -198,6 +95,7 @@ def _math_attention(
     causal: bool = ...,
     return_softmax: Literal[True] = ...,
     training: bool = ...,
+    scale: float | None = ...,
 ) -> tuple[Tensor, Tensor]: ...
 
 
@@ -211,6 +109,7 @@ def _math_attention(
     causal: bool = ...,
     return_softmax: bool = ...,
     training: bool = ...,
+    scale: float | None = ...,
 ) -> tuple[Tensor, Tensor | None]: ...
 
 
@@ -223,26 +122,35 @@ def _math_attention(
     causal=False,
     return_softmax=False,
     training=True,
+    scale=None,
 ):
     r"""
     This is a basic implementation of scaled dot product attention composed of
     combinations of fundamental components.
     """
+
     head_dim = query.shape[-1]
     query = paddle.transpose(query, [0, 2, 1, 3])
     key = paddle.transpose(key, [0, 2, 1, 3])
     value = paddle.transpose(value, [0, 2, 1, 3])
-    product = paddle.matmul(x=query * (head_dim**-0.5), y=key, transpose_y=True)
-
-    if mask is not None:
-        product = product + mask
+    # head_dim may be 0 in zero size case
+    scale = scale or (head_dim**-0.5 if head_dim != 0 else 1.0)
+    product = paddle.matmul(x=query * scale, y=key, transpose_y=True)
 
     if not causal:
+        if mask is not None:
+            product = product + mask
         weights = F.softmax(product)
     else:
         # special for XPU device
         place = paddle.get_device()
-        if "xpu" in place:
+        if (
+            "xpu" in place
+            or "cpu" in place
+            or product.shape[-1] < 32
+            or product.shape[-1] > 16384
+            or product.shape[-1] != product.shape[-2]
+        ):
             # softmax_mask_fuse_upper_triangle is not supported on XPU, use plain implementation
             mask = get_triangle_upper_mask(product)
             product = product + mask
@@ -260,7 +168,6 @@ def _math_attention(
 
 
 def _select_sdp_cuda(head_dim: int) -> str:
-
     if head_dim <= 256:
         return "flash_attn"
     else:
@@ -278,90 +185,24 @@ def _select_sdp(head_dim: int) -> str:
     if "xpu" in place:
         return "flash_attn"
 
-    if "iluvatar_gpu" in place:
-        return "flash_attn"
-
-    if "metax_gpu" in place:
-        return "flash_attn"
-
-    # not use sdp_kernel
-    if g_enable_flash is None:
-        if "gpu" not in place:
-            return "math"
-        else:
-            return _select_sdp_cuda(head_dim)
-
-    if (
-        g_enable_math is False
-        and g_enable_flash is False
-        and g_enable_mem_efficient is False
-    ):
+    enabled_backends = _get_enabled_backends()
+    if not enabled_backends:
         raise AssertionError(
             "No available backend for scaled_dot_product_attention was found."
         )
 
-    if g_enable_math is True:
-        if g_enable_flash is False and g_enable_mem_efficient is False:
+    enable_math = SDPBackend.MATH in enabled_backends
+    enable_flash = SDPBackend.FLASH_ATTENTION in enabled_backends
+    enable_mem_efficient = SDPBackend.EFFICIENT_ATTENTION in enabled_backends
+
+    if enable_math is True:
+        if enable_flash is False and enable_mem_efficient is False:
             return "math"
         if "gpu" not in place:
             return "math"
-    if g_enable_flash is True and g_enable_mem_efficient is True:
+    if enable_flash is True and enable_mem_efficient is True:
         return _select_sdp_cuda(head_dim)
-    if g_enable_flash is True:
-        return "flash_attn"
-    return "mem_efficient"
-
-
-def _select_sdp_for_sdpa(query, key, attn_mask, dropout, is_causal) -> str:
-    r"""
-    this select sdpa is alignment for torch version
-    """
-    place = paddle.get_device()
-    if "xpu" in place:
-        return "flash_attn"
-
-    if "iluvatar_gpu" in place:
-        return "flash_attn"
-
-    if "metax_gpu" in place:
-        return "flash_attn"
-
-    # not use sdp_kernel
-    if (
-        g_enable_flash is None
-        and g_enable_math is None
-        and g_enable_mem_efficient is None
-    ):
-        # test flash attn usage
-        use_flash = can_use_flash_attn(
-            query, key, attn_mask, dropout, is_causal
-        )
-        use_efficient = can_use_efficient(query)
-        use_math = True
-        if use_flash:
-            return "flash_attn"
-        elif use_efficient:
-            return "mem_efficient"
-        elif use_math:
-            return "math"
-
-    if (
-        g_enable_math is False
-        and g_enable_flash is False
-        and g_enable_mem_efficient is False
-    ):
-        raise AssertionError(
-            "No available backend for scaled_dot_product_attention was found."
-        )
-
-    if g_enable_math is True:
-        if g_enable_flash is False and g_enable_mem_efficient is False:
-            return "math"
-        if "gpu" not in place:
-            return "math"
-    if g_enable_flash is True and g_enable_mem_efficient is True:
-        return _select_sdp_cuda(query.shape[-1])
-    if g_enable_flash is True:
+    if enable_flash is True:
         return "flash_attn"
     return "mem_efficient"
 
@@ -379,6 +220,7 @@ def flash_attention(
     rng_name: str = ...,
     training: bool = ...,
     name: str | None = ...,
+    softmax_scale: float | None = ...,
 ) -> tuple[Tensor, None]: ...
 
 
@@ -395,6 +237,7 @@ def flash_attention(
     rng_name: str = ...,
     training: bool = ...,
     name: str | None = ...,
+    softmax_scale: float | None = ...,
 ) -> tuple[Tensor, Tensor]: ...
 
 
@@ -411,6 +254,7 @@ def flash_attention(
     rng_name: str = ...,
     training: bool = ...,
     name: str | None = ...,
+    softmax_scale: float | None = ...,
 ) -> tuple[Tensor, Tensor | None]: ...
 
 
@@ -499,6 +343,8 @@ def flash_attention(
     if sdp_func_name == "flash_attn":
         if "xpu" in paddle.get_device():
             fa_version = 2
+        elif "iluvatar_gpu" in paddle.get_device():
+            fa_version = 2
         elif paddle.get_flags(["FLAGS_cudnn_deterministic"])[
             "FLAGS_cudnn_deterministic"
         ]:
@@ -507,30 +353,30 @@ def flash_attention(
             fa_version = paddle.base.framework.get_flags(
                 ["FLAGS_flash_attn_version"]
             )["FLAGS_flash_attn_version"]
-        assert (
-            in_dynamic_or_pir_mode() or fa_version == 2
-        ), "flash attention 3 only support dynamic or pir mode"
-        assert (
-            dropout == 0.0 or fa_version == 2
-        ), "flash attention 3 does not support dropout"
-        assert (
-            not return_softmax or fa_version == 2
-        ), "flash attention 3 does not support return softmax"
-        assert (
-            fixed_seed_offset is None or fa_version == 2
-        ), "flash attention 3 does not support return softmax"
-        assert (
-            rng_name == "" or fa_version == 2
-        ), "flash attention 3 does not support setting rng_name"
-        assert (
-            training or fa_version == 2
-        ), "flash attention 3 does not support setting training"
-        assert (
-            name is None or fa_version == 2
-        ), "flash attention 3 does not support setting name"
-        assert (
-            softmax_scale is None or fa_version == 3
-        ), "flash attention 2 does not support setting softmax_scale"
+        assert in_dynamic_or_pir_mode() or fa_version == 2, (
+            "flash attention 3 only support dynamic or pir mode"
+        )
+        assert dropout == 0.0 or fa_version == 2, (
+            "flash attention 3 does not support dropout"
+        )
+        assert not return_softmax or fa_version == 2, (
+            "flash attention 3 does not support return softmax"
+        )
+        assert fixed_seed_offset is None or fa_version == 2, (
+            "flash attention 3 does not support setting seed_offset"
+        )
+        assert rng_name == "" or fa_version == 2, (
+            "flash attention 3 does not support setting rng_name"
+        )
+        assert training or fa_version == 2, (
+            "flash attention 3 does not support setting training"
+        )
+        assert name is None or fa_version == 2, (
+            "flash attention 3 does not support setting name"
+        )
+        assert softmax_scale is None or fa_version == 3, (
+            "flash attention 2 does not support setting softmax_scale"
+        )
         if in_dynamic_or_pir_mode():
             if fa_version == 2:
                 (result_attention, result_softmax, _, _) = _C_ops.flash_attn(
@@ -633,157 +479,6 @@ def flash_attention(
                 return_softmax=return_softmax,
                 training=training,
             )
-
-
-@overload
-def flash_attention_v3_varlen(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    cu_seqlens_q: Tensor,
-    cu_seqlens_k: Tensor,
-    dropout: float = ...,
-    causal: bool = ...,
-    return_softmax: Literal[False] = ...,
-    *,
-    fixed_seed_offset: Tensor | None = ...,
-    rng_name: str = ...,
-    training: bool = ...,
-    softmax_scale: float | None = ...,
-    max_seqlen_q: int = ...,
-    max_seqlen_k: int = ...,
-    name: str | None = ...,
-) -> tuple[Tensor, None]: ...
-
-
-@overload
-def flash_attention_v3_varlen(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    cu_seqlens_q: Tensor,
-    cu_seqlens_k: Tensor,
-    dropout: float = ...,
-    causal: bool = ...,
-    return_softmax: Literal[True] = ...,
-    *,
-    fixed_seed_offset: Tensor | None = ...,
-    rng_name: str = ...,
-    training: bool = ...,
-    softmax_scale: float | None = ...,
-    max_seqlen_q: int = ...,
-    max_seqlen_k: int = ...,
-    name: str | None = ...,
-) -> tuple[Tensor, Tensor]: ...
-
-
-def flash_attention_v3_varlen(
-    query,
-    key,
-    value,
-    cu_seqlens_q,
-    cu_seqlens_k,
-    dropout=0.0,
-    causal=False,
-    return_softmax=False,
-    *,
-    fixed_seed_offset=None,
-    rng_name="",
-    training=True,
-    softmax_scale=None,
-    max_seqlen_q=0,
-    max_seqlen_k=0,
-    name=None,
-):
-    r"""
-    The equation is:
-
-    .. math::
-
-        result=softmax(\frac{ Q * K^T }{\sqrt{d}}) * V
-
-    where : ``Q``, ``K``, and ``V`` represent the three input parameters of the attention module.
-    The dimensions of the three parameters are the same.
-    ``d`` represents the size of the last dimension of the three parameters.
-    This is the varlen version of flash attention.
-
-    Warning:
-        This API is only support inputs with dtype float16 and bfloat16.
-
-    Args:
-        query(Tensor): The query tensor in the Attention module.
-                        3-D tensor with shape:
-                        [token_num, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        key(Tensor): The key tensor in the Attention module.
-                        3-D tensor with shape:
-                        [token_num, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        value(Tensor): The value tensor in the Attention module.
-                        3-D tensor with shape:
-                        [token_num, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        cu_seqlens_q(Tensor): The cumulative sequence lengths of the sequences in the batch,
-                        used to index query.
-        cu_seqlens_k(Tensor): The cumulative sequence lengths of the sequences in the batch,
-                        used to index key and value.
-        dropout(float): The dropout ratio.
-        causal(bool): Whether enable causal mode.
-        return_softmax(bool): Whether to return softmax.
-        fixed_seed_offset(Tensor|None, optional): With fixed seed, offset for dropout mask.
-        rng_name(str): The name to select Generator.
-        training(bool): Whether it is in the training phase.
-        softmax_scale(float): The softmax scale of the attention.
-        max_seqlen_q(int): Maximum sequence length of query in the batch. Note it's the padding length, not the max actual seqlen.
-        max_seqlen_k(int): Maximum sequence length of key/value in the batch.
-        name(str|None, optional): The default value is None. Normally there is no need for user
-                        to set this property. For more information, please refer to
-                        :ref:`api_guide_Name`.
-
-    Returns:
-        out(Tensor): The attention tensor. 3-D tensor with shape: [token_num, num_heads, head_dim]. The dtype can be float16 or bfloat16.
-        softmax(Tensor): The softmax tensor. None if return_softmax is False.
-
-    Examples:
-        .. code-block:: python
-
-            >>> # doctest: +SKIP('flash_attn_v3 need H100 compile')
-            >>> import paddle
-
-            >>> paddle.seed(2023)
-            >>> q = paddle.rand((10, 2, 128), dtype="bfloat16")
-            >>> cu_seqlens_q = paddle.to_tensor([0, 10], dtype="int32")
-            >>> max_seq_len_q = 10
-
-            >>> output = paddle.nn.functional.flash_attention.flash_attention_v3_varlen(q, q, q, cu_seqlens_q, cu_seqlens_q, max_seqlen_q=max_seq_len_q, max_seqlen_k=max_seq_len_q, causal=True)
-            >>> # doctest: -SKIP
-
-    """
-    if softmax_scale is None:
-        softmax_scale = query.shape[-1] ** (-0.5)
-    out, softmax_lse = _C_ops.flash_attn_v3_varlen(
-        query,
-        key,
-        value,
-        cu_seqlens_q,
-        cu_seqlens_k,
-        None,  # q_v_
-        None,  # q_descale_
-        None,  # k_descale_
-        None,  # v_descale_
-        softmax_scale,
-        causal,
-        -1,  # window_size_left
-        -1,  # window_size_right
-        0.0,  # softcap
-        1,  # num_splits
-        False,  # manual_set_pack_gqa
-        False,  # pack_gqa_
-        0,  # sm_margin,
-        max_seqlen_q,
-        max_seqlen_k,
-    )
-    return out, softmax_lse  # return_softmax
 
 
 @overload
@@ -1179,6 +874,180 @@ def flash_attn_unpadded(
     return out, softmax if return_softmax else None
 
 
+def flash_attention_v3_varlen(
+    query,
+    key,
+    value,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    max_seqlen_q,
+    max_seqlen_k,
+    seqused_q=None,
+    seqused_k=None,
+    softmax_scale=None,
+    causal=False,
+    qv=None,
+    q_descale=None,
+    k_descale=None,
+    v_descale=None,
+    window_size=(-1, -1),
+    softcap=0.0,
+    num_splits=1,
+    pack_gqa=None,
+    sm_margin=0,
+):
+    return flash_attn_varlen_func(
+        query,
+        key,
+        value,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        max_seqlen_q,
+        max_seqlen_k,
+        seqused_q,
+        seqused_k,
+        softmax_scale,
+        causal,
+        qv,
+        q_descale,
+        k_descale,
+        v_descale,
+        window_size,
+        softcap,
+        num_splits,
+        pack_gqa,
+        sm_margin,
+    )
+
+
+def flash_attn_varlen_func(
+    query,
+    key,
+    value,
+    cu_seqlens_q,
+    cu_seqlens_k,
+    max_seqlen_q,
+    max_seqlen_k,
+    seqused_q=None,
+    seqused_k=None,
+    softmax_scale=None,
+    causal=False,
+    qv=None,
+    q_descale=None,
+    k_descale=None,
+    v_descale=None,
+    window_size=(-1, -1),
+    softcap=0.0,
+    num_splits=1,
+    pack_gqa=None,
+    sm_margin=0,
+):
+    r"""
+    The equation is:
+
+    .. math::
+        result=softmax(\frac{ Q * K^T }{\sqrt{d}}) * V
+
+    where : ``Q``, ``K``, and ``V`` represent the three input parameters of the attention module.
+    The dimensions of the three parameters are the same.
+    ``d`` represents the size of the last dimension of the three parameters.
+    This is the varlen version of flash attention.
+
+    Warning:
+        This API is only support inputs with dtype float16 and bfloat16.
+    Args:
+        query(Tensor): The query tensor in the Attention module.
+                        3-D tensor with shape:
+                        [token_num, num_heads, head_dim].
+                        The dtype can be float16 or bfloat16.
+        key(Tensor): The key tensor in the Attention module.
+                        3-D tensor with shape:
+                        [token_num, num_heads, head_dim].
+                        The dtype can be float16 or bfloat16.
+        value(Tensor): The value tensor in the Attention module.
+                        3-D tensor with shape:
+                        [token_num, num_heads, head_dim].
+                        The dtype can be float16 or bfloat16.
+        cu_seqlens_q(Tensor): The cumulative sequence lengths of the sequences in the batch,
+                        used to index query.
+        cu_seqlens_k(Tensor): The cumulative sequence lengths of the sequences in the batch,
+                        used to index key and value.
+        causal(bool): Whether enable causal mode.
+        softmax_scale(float): The softmax scale of the attention.
+        max_seqlen_q(int): Maximum sequence length of query in the batch. Note it's the padding length, not the max actual seqlen.
+        max_seqlen_k(int): Maximum sequence length of key/value in the batch.
+
+    Returns:
+        out(Tensor): The attention tensor. 3-D tensor with shape: [token_num, num_heads, head_dim]. The dtype can be float16 or bfloat16.
+        softmax(Tensor): The softmax tensor. None if return_softmax is False.
+
+    Examples:
+        .. code-block:: pycon
+
+            >>> # doctest: +SKIP('flash_attn_v3 need H100 compile')
+            >>> import paddle
+            >>> paddle.seed(2023)
+            >>> q = paddle.rand((10, 2, 128), dtype="bfloat16")
+            >>> cu_seqlens_q = paddle.to_tensor([0, 10], dtype="int32")
+            >>> max_seq_len_q = 10
+            >>> output = paddle.nn.functional.flash_attention.flash_attention_v3_varlen(
+            ...     q, q, q, cu_seqlens_q, cu_seqlens_q, max_seqlen_q=max_seq_len_q, max_seqlen_k=max_seq_len_q, causal=True
+            ... )
+            >>> # doctest: -SKIP
+    """
+    assert "xpu" not in paddle.get_device(), (
+        "flash_attn_varlen_func is not supported on xpu"
+    )
+
+    assert not paddle.get_flags(["FLAGS_cudnn_deterministic"])[
+        "FLAGS_cudnn_deterministic"
+    ], "flash_attn_varlen_func does not support deterministic"
+
+    assert (
+        paddle.base.framework.get_flags(["FLAGS_flash_attn_version"])[
+            "FLAGS_flash_attn_version"
+        ]
+        == 3
+    ), "FLAGS_flash_attn_version is 2, conflicts with flash_attn_varlen_func"
+
+    assert in_dynamic_or_pir_mode(), (
+        "flash_attn_varlen_func only support dynamic or pir mode"
+    )
+
+    assert qv is None, "flash_attn_varlen_func does not support setting qv"
+
+    if softmax_scale is None:
+        softmax_scale = (
+            query.shape[-1] + (qv.shape[-1] if qv is not None else 0)
+        ) ** (-0.5)
+
+    out, softmax_lse = _C_ops.flash_attn_v3_varlen(
+        query,
+        key,
+        value,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        seqused_q,
+        seqused_k,
+        qv,
+        q_descale,
+        k_descale,
+        v_descale,
+        max_seqlen_q,
+        max_seqlen_k,
+        softmax_scale,
+        causal,
+        window_size[0],
+        window_size[1],
+        softcap,
+        num_splits,
+        pack_gqa is not None,
+        pack_gqa if pack_gqa is not None else False,
+        sm_margin,
+    )
+    return out, softmax_lse
+
+
 @overload
 def flash_attn_varlen_qkvpacked(
     qkv: Tensor,
@@ -1364,204 +1233,6 @@ def flash_attn_varlen_qkvpacked(
     return out, softmax if return_softmax else None
 
 
-def scaled_dot_product_attention(
-    query: Tensor,
-    key: Tensor,
-    value: Tensor,
-    attn_mask: Tensor | None = None,
-    dropout_p: float = 0.0,
-    is_causal: bool = False,
-    training: bool = True,
-    name: str | None = None,
-    backend: str | None = None,
-) -> Tensor:
-    r"""
-    The equation is:
-
-    .. math::
-
-        result=softmax(\frac{ Q * K^T }{\sqrt{d}}) * V
-
-    where : ``Q``, ``K``, and ``V`` represent the three input parameters of the attention module.
-    The dimensions of the three parameters are the same.
-    ``d`` represents the size of the last dimension of the three parameters.
-
-    Warning:
-        This API only supports inputs with dtype float16 and bfloat16.
-
-    Args:
-        query(Tensor): The query tensor in the Attention module.
-                        4-D tensor with shape:
-                        [batch_size, seq_len, num_heads, head_dim].
-                        3-D tensor with shape:
-                        [seq_len, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        key(Tensor): The key tensor in the Attention module.
-                        4-D tensor with shape:
-                        [batch_size, seq_len, num_heads, head_dim].
-                        3-D tensor with shape:
-                        [seq_len, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        value(Tensor): The value tensor in the Attention module.
-                        4-D tensor with shape:
-                        [batch_size, seq_len, num_heads, head_dim].
-                        3-D tensor with shape:
-                        [seq_len, num_heads, head_dim].
-                        The dtype can be float16 or bfloat16.
-        attn_mask(Tensor, optional): A float mask of the same type as query,
-                        key, value that is added to the attention score.
-        dropout_p(float, optional): The dropout ratio.
-        is_causal(bool, optional): Whether enable causal mode.
-        training(bool, optional): Whether it is in the training phase.
-        name(str|None, optional): The default value is None. Normally there is no need for user
-                        to set this property. For more information, please refer to
-                        :ref:`api_guide_Name`.
-
-    Returns:
-        out(Tensor): The attention tensor.
-                    4-D tensor with shape: [batch_size, seq_len, num_heads, head_dim].
-                    The dtype can be float16 or bfloat16.
-
-    Examples:
-        .. code-block:: python
-
-            >>> # doctest: +SKIP('bfloat need V100 compile')
-            >>> import paddle
-            >>> q = paddle.rand((1, 128, 2, 16), dtype=paddle.bfloat16)
-            >>> output = paddle.nn.functional.scaled_dot_product_attention(q, q, q, None, 0.9, False)
-            >>> print(output)
-            >>> # doctest: -SKIP
-    """
-    if (
-        backend == 'p2p'
-        and query.is_dist()
-        and key.is_dist()
-        and value.is_dist()
-    ):
-        # ring attention for auto_parallel mode
-        out = paddle.distributed.auto_parallel.ring_attention.RingFlashAttention.apply(
-            query,
-            key,
-            value,
-            attn_mask,
-            dropout_p,
-            is_causal,
-        )
-        return out
-
-    if query.ndim == 3:
-        query = paddle.unsqueeze(query, axis=0)
-
-    if key.ndim == 3:
-        key = paddle.unsqueeze(key, axis=0)
-
-    if value.ndim == 3:
-        value = paddle.unsqueeze(value, axis=0)
-
-    if attn_mask is None:
-        # downgraded to ordinary flash attention implementation
-        out, _ = flash_attention(query, key, value, dropout_p, is_causal)
-        return out
-    else:
-        head_dim = query.shape[3]
-        sdp_func_name = _select_sdp_for_sdpa(
-            query, key, attn_mask, dropout_p, is_causal
-        )
-        if attn_mask.dtype == paddle.bool:
-            attn_mask = paddle.where(
-                attn_mask,
-                paddle.to_tensor(0.0, dtype=query.dtype),
-                paddle.to_tensor(-float('inf'), dtype=query.dtype),
-            )
-        if sdp_func_name == "flash_attn":
-            if in_dynamic_or_pir_mode():
-                fixed_seed_offset = None
-                return_softmax = False
-                rng_name = ""
-                out, _, _, _ = _C_ops.flash_attn(
-                    query,
-                    key,
-                    value,
-                    fixed_seed_offset,
-                    attn_mask,
-                    dropout_p,
-                    is_causal,
-                    return_softmax,
-                    not training,
-                    rng_name,
-                )
-                return out
-            else:
-                helper = LayerHelper('flash_attn', **locals())
-                dtype = helper.input_dtype(input_param_name='q')
-                out = helper.create_variable_for_type_inference(dtype)
-                softmax = helper.create_variable_for_type_inference(dtype)
-                softmax_lse = helper.create_variable_for_type_inference(
-                    paddle.float32
-                )
-                seed_offset = helper.create_variable_for_type_inference(
-                    paddle.int64
-                )
-                inputs = {
-                    'q': query,
-                    'k': key,
-                    'v': value,
-                    'attn_mask': attn_mask,
-                }
-                outputs = {
-                    'out': out,
-                    'softmax': softmax,
-                    'softmax_lse': softmax_lse,
-                    'seed_offset': seed_offset,
-                }
-                helper.append_op(
-                    type='flash_attn',
-                    inputs=inputs,
-                    outputs=outputs,
-                    attrs={
-                        'dropout': dropout_p,
-                        'causal': is_causal,
-                        'return_softmax': False,
-                        'is_test': not training,
-                        'rng_name': '',
-                    },
-                )
-                return out
-        elif sdp_func_name == "mem_efficient":
-            from paddle.incubate.nn.functional.variable_length_memory_efficient_attention import (
-                variable_length_memory_efficient_attention,
-            )
-
-            seq_lens = paddle.to_tensor(
-                [query.shape[1]] * query.shape[0], dtype='int32'
-            )
-
-            scale = 1.0 / np.sqrt(query.shape[-1])
-
-            query = query.transpose([0, 2, 1, 3])
-            key = key.transpose([0, 2, 1, 3])
-            value = value.transpose([0, 2, 1, 3])
-
-            output = variable_length_memory_efficient_attention(
-                query, key, value, seq_lens, seq_lens, attn_mask, scale
-            )
-
-            output = output.transpose([0, 2, 1, 3])
-
-            return output
-        elif sdp_func_name == "math":
-            return _math_attention(
-                query,
-                key,
-                value,
-                attn_mask,
-                dropout_p,
-                is_causal,
-                False,
-                training,
-            )[0]
-
-
 def flashmask_attention(
     query: Tensor,
     key: Tensor,
@@ -1577,6 +1248,8 @@ def flashmask_attention(
     rng_name: str = "",
     training: bool = True,
     name: str | None = None,
+    softmax_scale: float | None = None,
+    block_mask: Tensor | None = None,
 ):
     r"""
     FlashMask: Official Implementation
@@ -1632,11 +1305,30 @@ def flashmask_attention(
             If causal mode is disabled, Query at position i will only attend to keys between [i - window_size, i + window_size] or [i - window_size[0], i + window_size[1]].
         return_softmax_lse (bool): Whether to return the log-sum-exp of the softmax. Default is False.
         return_seed_offset (bool): Whether to return the random seed offset. Default is False.
-        fixed_seed_of fset(Tensor, optional): With fixed seed, offset for dropout mask.
+        fixed_seed_offset(Tensor, optional): With fixed seed, offset for dropout mask.
         rng_name (str): The name to select Generator.
         training (bool): Whether the module is in training mode. Default is True.
         name (str, optional): Name of the operation. Default is None. Normally, users do not need to set this property.
             For more information, refer to :ref:`api_guide_Name` .
+        block_mask (tensor, optional):
+            A 4-D integer mask tensor indicating whether each block in the attention matrix should be kept or masked. Must be used together with flashmask.
+            The shape should be [batch_size, num_heads, blocklen_q, blocklen_k], where:
+
+            blocklen_q = ceil(seqlen_q / 128), i.e., block_mask.shape[2] must be (seqlen_q + 127) // 128
+            blocklen_k = ceil(seqlen_k / 128), i.e., block_mask.shape[3] must be (seqlen_k + 127) // 128
+            block_mask.shape[1] (number of heads) must match the num_heads dimension of the flashmask
+            Both seqlen_q and seqlen_k must be less than or equal to 128 * 1024
+            The dtype should be int32, and each element should be either 0 or 1.
+            A value of 1 indicates that the corresponding block is kept (not masked), while 0 means the block is masked.
+
+            Usage Notes:
+
+            Only supported when blockdim_q = blockdim_k = 128 now.
+            Only supported when headdim = 128 now.
+            This argument must be provided together with flashmask.
+            The mask will be applied at the block level: each [i, j] position in block_mask controls whether the corresponding [128 x 128] block in the attention matrix is masked.
+            Any mismatch in expected shape or head dimension will raise an error.
+
 
     Returns
         Tensor. The computed attention result with the same shape as the input `query`.
@@ -2186,9 +1878,9 @@ def flashmask_attention(
             window_size = (window_size, window_size)
         sq = query.shape[1]
         bsz = query.shape[0]
-        assert (
-            startend_row_indices is None
-        ), "can't use window_size with startend_row_indices"
+        assert startend_row_indices is None, (
+            "can't use window_size with startend_row_indices"
+        )
         if causal:
             startend_row_indices = paddle.arange(
                 window_size[0] + 1, sq + window_size[0] + 1, dtype="int32"
@@ -2208,6 +1900,12 @@ def flashmask_attention(
             startend_row_indices = paddle.clip(
                 startend_row_indices, min=0, max=sq
             ).repeat_interleave(bsz, 0)
+
+    if block_mask is not None:
+        # xhy: can set a full startend_row_indices for block_mask_attn when using block_mask_attn?
+        assert startend_row_indices is not None, (
+            "must provide startend_row_indices when using block_mask_attn"
+        )
 
     if startend_row_indices is None:
         (
@@ -2229,24 +1927,51 @@ def flashmask_attention(
         )
 
     else:
-        assert (
-            startend_row_indices.dtype == paddle.int32
-        ), f"startend_row_indices.dtype must be paddle.int32, but got {startend_row_indices.dtype}"
-        assert (
-            len(startend_row_indices.shape) == 4
-        ), f"startend_row_indices rank must be 4,but got {startend_row_indices.shape}"
+        assert startend_row_indices.dtype == paddle.int32, (
+            f"startend_row_indices.dtype must be paddle.int32, but got {startend_row_indices.dtype}"
+        )
+        assert len(startend_row_indices.shape) == 4, (
+            f"startend_row_indices rank must be 4,but got {startend_row_indices.shape}"
+        )
 
-        assert (
-            startend_row_indices.shape[0] == key.shape[0]
-        ), f"startend_row_indices.shape[0] must be equal to batch_size, but got {startend_row_indices.shape[0]} and {key.shape[0]}"
+        assert startend_row_indices.shape[0] == key.shape[0], (
+            f"startend_row_indices.shape[0] must be equal to batch_size, but got {startend_row_indices.shape[0]} and {key.shape[0]}"
+        )
 
-        assert (
-            startend_row_indices.shape[2] == key.shape[1]
-        ), f"startend_row_indices.shape[2] must be equal to seqlen_k, but got {startend_row_indices.shape[2]} and {key.shape[2]}"
+        assert startend_row_indices.shape[2] == key.shape[1], (
+            f"startend_row_indices.shape[2] must be equal to seqlen_k, but got {startend_row_indices.shape[2]} and {key.shape[2]}"
+        )
         assert startend_row_indices.shape[1] in [
             1,
             key.shape[2],
-        ], "startend_row_indices head_num must be equal to 1(broadcast) or head_num_k."
+        ], (
+            "startend_row_indices head_num must be equal to 1(broadcast) or head_num_k."
+        )
+
+        if block_mask is not None:
+            assert block_mask.dtype == paddle.int32, (
+                f"block_mask.dtype must be paddle.int32, but got {block_mask.dtype}"
+            )
+
+            assert block_mask.shape[0] == key.shape[0], (
+                f"block_mask.shape[0] must be equal to batch_size, but got {block_mask.shape[0]} and {key.shape[0]}"
+            )
+
+            assert block_mask.shape[1] == startend_row_indices.shape[1], (
+                f"block_mask.shape[1] must be equal to startend_row_indices.shape[1], but got {block_mask.shape[1]} and {key.shape[2]}"
+            )
+
+            assert block_mask.shape[2] == (query.shape[1] + 127) // 128, (
+                "block_size must be 128 when using block_mask_attn"
+            )
+
+            assert block_mask.shape[3] == (key.shape[1] + 127) // 128, (
+                "block_size must be 128 when using block_mask_attn"
+            )
+
+            assert key.shape[3] == 128, (
+                "headdim must be 128 when using block_mask_attn"
+            )
 
         if causal:
             if startend_row_indices.shape[-1] == 1:
@@ -2267,23 +1992,99 @@ def flashmask_attention(
                     f"Invalid shape of startend_row_indices, when causal is False, the last dimension should be either 2 or 4 but got {startend_row_indices.shape[-1]}"
                 )
 
-        (
-            out,
-            result_softmax,
-            result_softmax_lse,
-            result_seed_offset,
-        ) = _C_ops.flashmask_attention(
-            query,
-            key,
-            value,
-            startend_row_indices,
-            fixed_seed_offset,
-            dropout,
-            causal,
-            False,
-            not training,
-            rng_name,
-        )
+        if (
+            "xpu" not in paddle.get_device()
+            and paddle.get_flags(["FLAGS_cudnn_deterministic"])[
+                "FLAGS_cudnn_deterministic"
+            ]
+        ):
+            assert block_mask is None, (
+                " blockmask attention no supports deterministic now ."
+            )
+
+        if "xpu" in paddle.get_device():
+            fa_version = 2
+        elif (
+            paddle.base.framework.get_flags(["FLAGS_flash_attn_version"])[
+                "FLAGS_flash_attn_version"
+            ]
+            == 3
+            and paddle.base.framework.get_flags(["FLAGS_cudnn_deterministic"])[
+                "FLAGS_cudnn_deterministic"
+            ]
+            and query.shape[3] > 128
+        ):
+            fa_version = 2
+        else:
+            fa_version = paddle.base.framework.get_flags(
+                ["FLAGS_flash_attn_version"]
+            )["FLAGS_flash_attn_version"]
+
+        if fa_version == 2:
+            assert softmax_scale is None, (
+                "flashmask_attention does not support setting softmax_scale, use flashmask_attention_v2 instead"
+            )
+
+            assert block_mask is None, (
+                " blockmask attention only supports sm >= 90 now."
+            )
+
+            (
+                out,
+                result_softmax,
+                result_softmax_lse,
+                result_seed_offset,
+            ) = _C_ops.flashmask_attention(
+                query,
+                key,
+                value,
+                startend_row_indices,
+                fixed_seed_offset,
+                dropout,
+                causal,
+                False,
+                not training,
+                rng_name,
+            )
+
+        elif fa_version == 3:
+            assert dropout == 0.0, (
+                "flashmask_attention_v2 does not support dropout"
+            )
+            assert not return_seed_offset, (
+                "flashmask_attention_v2 does not support return seed_offset"
+            )
+            assert fixed_seed_offset is None, (
+                "flashmask_attention_v2 does not support setting seed_offset"
+            )
+            assert rng_name == "", (
+                "flashmask_attention_v2 does not support setting rng_name"
+            )
+            assert training, (
+                "flashmask_attention_v2 does not support setting training to False"
+            )
+
+            assert name is None, (
+                "flashmask_attention_v2 does not support setting name"
+            )
+
+            if softmax_scale is None:
+                softmax_scale = query.shape[-1] ** (-0.5)
+
+            (
+                out,
+                result_softmax_lse,
+            ) = _C_ops.flashmask_attention_v2(
+                query,
+                key,
+                value,
+                startend_row_indices,
+                block_mask,
+                softmax_scale,
+                causal,
+            )
+        else:
+            raise ValueError(f"Invalid flash attention version: {fa_version}")
 
     outputs = [out]
     if return_softmax_lse:
@@ -2366,9 +2167,9 @@ def calc_reduced_attention_scores(
             >>> )
             >>> # doctest: -SKIP
     """
-    assert (
-        query.stop_gradient and key.stop_gradient
-    ), 'calc_reduced_attention_scores() is for inference only.'
+    assert query.stop_gradient and key.stop_gradient, (
+        'calc_reduced_attention_scores() is for inference only.'
+    )
 
     if in_dynamic_or_pir_mode():
         reduced_scores = _C_ops.calc_reduced_attn_scores(

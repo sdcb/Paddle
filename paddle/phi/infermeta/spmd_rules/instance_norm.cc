@@ -48,14 +48,14 @@ SpmdInfo InstanceNormInferSpmd(const DistMetaTensor& x,
   PADDLE_ENFORCE_GE(
       x_ndim,
       2,
-      common::errors::InvalidArgument(
-          "The ndim of x in instance_norm should greater than 1, but got [%d].",
-          x_ndim));
+      common::errors::InvalidArgument("The ndim of x in instance_norm should "
+                                      "be greater than 1, but got [%d].",
+                                      x_ndim));
   PADDLE_ENFORCE_LE(
       x_ndim,
       5,
       common::errors::InvalidArgument(
-          "The ndim of x in instance_norm should less than 6, but got [%d].",
+          "The ndim of x in instance_norm should be less than 6, but got [%d].",
           x_ndim));
   PADDLE_ENFORCE_EQ(
       scale_ndim,
@@ -131,6 +131,7 @@ SpmdInfo InstanceNormInferSpmd(const DistMetaTensor& x,
 
 SpmdInfo InstanceNormGradInferSpmd(const DistMetaTensor& x,
                                    const DistMetaTensor& scale,
+                                   const DistMetaTensor& bias UNUSED,
                                    const DistMetaTensor& saved_mean,
                                    const DistMetaTensor& saved_variance,
                                    const DistMetaTensor& y_grad,

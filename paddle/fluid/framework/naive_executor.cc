@@ -22,10 +22,8 @@
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/scope.h"
 #include "paddle/fluid/framework/variable_helper.h"
-#include "paddle/phi/core/platform/denormal.h"
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
+#include "paddle/phi/core/platform/denormal.h"
 #ifdef PADDLE_WITH_TENSORRT
 #include "paddle/fluid/operators/tensorrt/tensorrt_engine_op.h"
 #endif
@@ -95,7 +93,7 @@ void NaiveExecutor::RunInterpreterCore(
 
 void NaiveExecutor::Run() {
 #ifdef PADDLE_WITH_DNNL
-  platform::AttachPointerHashToMKLDNNKey(this, place_);
+  platform::AttachPointerHashToONEDNNKey(this, place_);
   platform::RegisterModelLayout(ops_, place_);
 #endif
   platform::ScopedFlushDenormal flush;
@@ -297,9 +295,9 @@ void NaiveExecutor::MakeReusePlan(
 
 NaiveExecutor::~NaiveExecutor() {
 #ifdef PADDLE_WITH_DNNL
-  // Clear mkl-dnn cache,
-  // this is needed to have mkl-dnn unit tests working
-  platform::ClearMKLDNNCache(place_, this);
+  // Clear one-dnn cache,
+  // this is needed to have one-dnn unit tests working
+  platform::ClearONEDNNCache(place_, this);
 #endif
 }
 

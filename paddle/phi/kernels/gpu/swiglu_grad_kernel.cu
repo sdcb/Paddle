@@ -142,7 +142,7 @@ void SwiGLUGradKernelImpl(const Context &dev_ctx,
   do {                                                                      \
     switch (vec_size) {                                                     \
       PD_LAUNCH_SWIGLU_GRAD_CUDA_KERNEL_BASE(                               \
-          8, __is_combine, __has_dx, __has_dy);                             \
+          VecSizeVL, __is_combine, __has_dx, __has_dy);                     \
       PD_LAUNCH_SWIGLU_GRAD_CUDA_KERNEL_BASE(                               \
           VecSizeL, __is_combine, __has_dx, __has_dy);                      \
       PD_LAUNCH_SWIGLU_GRAD_CUDA_KERNEL_BASE(                               \
@@ -196,5 +196,5 @@ PD_REGISTER_KERNEL(swiglu_grad,
                    phi::SwiGLUGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

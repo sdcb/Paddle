@@ -210,7 +210,7 @@ int FCFusePass::ApplyFCPattern(Graph* graph, bool with_relu) const {
                  w_w * sizeof(float));
         }
         w_tensor->Resize(DDim{weight_dims[0] + 4, weight_dims[1] + 4});
-        auto* weight_data_new = w_tensor->mutable_data<float>(phi::CPUPlace());
+        auto* weight_data_new = w_tensor->mutable_data<float>(CPUPlace());
         for (int i = 0; i < w_h; i++) {
           memcpy(weight_data_new + i * (w_w + 4),
                  weight_data_tmp + i * w_w,
@@ -255,7 +255,7 @@ int FCFusePass::ApplyFCPattern(Graph* graph, bool with_relu) const {
     desc.SetAttr("support_int8", inscale_flag && outscale_flag);
 
     // if we can find out_threshold in elementwise_add, then set it as the
-    // out_thrshold of fc
+    // out_threshold of fc
     auto out_threshold_attr =
         elementwise_add_op_desc->GetNullableAttr("out_threshold");
     if (out_threshold_attr.index()) {

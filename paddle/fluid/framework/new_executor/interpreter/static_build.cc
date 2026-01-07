@@ -20,12 +20,9 @@
 #include "paddle/fluid/framework/new_executor/standalone_executor.h"
 #include "paddle/fluid/operators/controlflow/control_flow_op_helper.h"
 #include "paddle/fluid/operators/controlflow/while_op_helper.h"
+#include "paddle/fluid/platform/onednn_helper.h"
 #include "paddle/phi/core/framework/reader.h"
 #include "paddle/phi/core/operators/reader/buffered_reader.h"
-
-#ifdef PADDLE_WITH_DNNL
-#include "paddle/fluid/platform/onednn_helper.h"
-#endif
 
 COMMON_DECLARE_bool(cache_inference_while_scope);
 
@@ -124,7 +121,7 @@ bool BlockCanBeStaticBuilt(const framework::BlockDesc& block) {
   // in_black_list = (kernelCode >> 5) & 1
   // is_operator_base = (kernelCode >> 4) & 1
   // is_custom_op = (kernelCode >> 3) & 1
-  // use_mkldnn = (kernelCode >> 2) & 1
+  // use_onednn = (kernelCode >> 2) & 1
   // sub_block_can_not_static_build = (kernelCode >> 1) & 1
   using KernelCode = int8_t;
   std::set<std::pair<std::string, KernelCode>> invalid_ops;
@@ -150,6 +147,12 @@ bool BlockCanBeStaticBuilt(const framework::BlockDesc& block) {
       use_mkldnn = attr.index() == 1 ? PADDLE_GET_CONST(int, attr)
                                      : PADDLE_GET_CONST(bool, attr);
     }
+    bool use_onednn = use_mkldnn;
+    if (!use_mkldnn && op->HasAttr("use_onednn")) {
+      Attribute attr = op->GetAttr("use_onednn");
+      use_onednn = attr.index() == 1 ? PADDLE_GET_CONST(int, attr)
+                                     : PADDLE_GET_CONST(bool, attr);
+    }
 
     bool sub_block_can_not_static_build = false;
     if (op->HasAttr("sub_block")) {
@@ -160,9 +163,9 @@ bool BlockCanBeStaticBuilt(const framework::BlockDesc& block) {
 
     KernelCode kernel_code = static_cast<KernelCode>(
         (in_black_list << 5) + (is_operator_base << 4) + (is_custom_op << 3) +
-        (use_mkldnn << 2) + (sub_block_can_not_static_build << 1));
+        (use_onednn << 2) + (sub_block_can_not_static_build << 1));
 
-    if (in_black_list || is_operator_base || is_custom_op || use_mkldnn ||
+    if (in_black_list || is_operator_base || is_custom_op || use_onednn ||
         sub_block_can_not_static_build) {
       invalid_ops.insert(std::make_pair(op_type, kernel_code));
     }
@@ -208,7 +211,7 @@ bool TensorShouldBeFakeInitialized(const OperatorBase& op,
 
   if (op_type == "batch_norm" && parameter_name == "ReserveSpace") {
     if (dynamic_cast<const OperatorWithKernel*>(&op)->kernel_type()->place_ ==
-        phi::CPUPlace()) {
+        CPUPlace()) {
       VLOG(2) << "Skip fake initialization for: " << parameter_name;
       return false;
     }
@@ -263,7 +266,7 @@ bool TensorShouldBeFakeInitialized(const OperatorBase& op,
     return op.Attr<std::string>("pooltype") == "MEAN" &&
            dynamic_cast<const OperatorWithKernel*>(&op)
                    ->kernel_type()
-                   ->place_ != phi::CPUPlace();
+                   ->place_ != CPUPlace();
   }
 
   return tensor && !IsExtendedTensor(*tensor);
@@ -339,7 +342,7 @@ void FakeInitializeTensor(const phi::DeviceContext& dev_ctx,
     }
     phi::Copy(*dev_ctx_for_copy, *tensor, place, /*blocking=*/true, tensor);
   } else {
-    if (place == phi::CPUPlace()) {
+    if (place == CPUPlace()) {
       dev_ctx.HostAlloc(tensor,
                         dtype,
                         /*requested_size=*/0,
@@ -423,7 +426,7 @@ void RunConditionalBlockPreStaticBuild(const framework::Scope& scope,
   // Executor on being destroyed clears oneDNN cache and resets
   // registered model data layout. This is unwanted for nested
   // Executors (executors declared inside control ops)
-  platform::DontClearMKLDNNCache(dev_place);
+  platform::DontClearONEDNNCache(dev_place);
 #endif
   auto* block = op.Attr<framework::BlockDesc*>("sub_block");
   VLOG(3) << "Conditional block.idx = " << block->ID()
@@ -463,7 +466,7 @@ void RunWhileBlockPreStaticBuild(const framework::Scope& scope,
   // Executor on being destroyed clears oneDNN cache and resets
   // registered model data layout. This is unwanted for nested
   // Executors (executors declared inside control ops)
-  platform::DontClearMKLDNNCache(dev_place);
+  platform::DontClearONEDNNCache(dev_place);
 #endif
   auto* block = op.Attr<framework::BlockDesc*>("sub_block");
 
@@ -718,7 +721,7 @@ void FakeInitializeOutputsForOperatorBase(
         std::dynamic_pointer_cast<operators::reader::BufferedReader>(
             reader->Get());
     phi::Place target_place =
-        buffered_reader ? buffered_reader->GetPlace() : phi::CPUPlace();
+        buffered_reader ? buffered_reader->GetPlace() : CPUPlace();
 
     auto& outputs = op.Outputs("Out");
     auto& var_types = reader->VarTypes();

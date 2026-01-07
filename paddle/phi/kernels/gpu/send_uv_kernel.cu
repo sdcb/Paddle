@@ -19,6 +19,7 @@
 #include "paddle/common/hostdevice.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
 #include "paddle/phi/kernels/gpu/graph_send_ue_recv_funcs.h"
 #include "paddle/phi/kernels/impl/graph_message_passing_impl.h"
@@ -45,8 +46,11 @@ __global__ void GraphSendUVCUDAKernel(const T* x_data,
   while (ty < index_size) {
     IndexT src = src_indices[ty];
     IndexT dst = dst_indices[ty];
-    int64_t tx = blockIdx.x * blockDim.x + threadIdx.x;
-    int64_t stride_x = blockDim.x * gridDim.x;
+    int64_t tx =
+        static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+        static_cast<int64_t>(threadIdx.x);
+    int64_t stride_x =
+        static_cast<int64_t>(blockDim.x) * static_cast<int64_t>(gridDim.x);
 
     const T* x_off = x_data + src * x_len;
     const T* y_off = y_data + dst * y_len;
@@ -150,6 +154,14 @@ void SendUVKernel(const Context& dev_ctx,
                   const std::string& message_op,
                   DenseTensor* out) {
   auto index_type = src_index.dtype();
+
+  if (x.numel() == 0 || y.numel() == 0 || src_index.numel() == 0 ||
+      dst_index.numel() == 0) {
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(out->dims())), 0, out);
+    return;
+  }
+
   if (index_type == phi::DataType::INT32) {
     GraphSendUVOpCUDAKernelLaunchHelper<Context, T, int32_t>(
         dev_ctx, x, y, src_index, dst_index, message_op, out);
@@ -169,4 +181,4 @@ PD_REGISTER_KERNEL(send_uv,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

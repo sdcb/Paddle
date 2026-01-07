@@ -164,15 +164,15 @@ struct KronGradOpFunctor {
     int64_t numel_x = x.numel();
     int64_t numel_y = y.numel();
 
-    const phi::DDim &dim_x = x.dims();
-    const phi::DDim &dim_y = y.dims();
-    const phi::DDim &dim_dout = dout.dims();
-    const phi::DDim stride_x =
-        dim_x.size() == 0 ? phi::DDim(dim_x) : common::stride(dim_x);
-    const phi::DDim stride_y =
-        dim_y.size() == 0 ? phi::DDim(dim_y) : common::stride(dim_y);
-    const phi::DDim stride_dout =
-        dim_dout.size() == 0 ? phi::DDim(dim_dout) : common::stride(dim_dout);
+    const DDim &dim_x = x.dims();
+    const DDim &dim_y = y.dims();
+    const DDim &dim_dout = dout.dims();
+    const DDim stride_x =
+        dim_x.size() == 0 ? DDim(dim_x) : common::stride(dim_x);
+    const DDim stride_y =
+        dim_y.size() == 0 ? DDim(dim_y) : common::stride(dim_y);
+    const DDim stride_dout =
+        dim_dout.size() == 0 ? DDim(dim_dout) : common::stride(dim_dout);
 
     const int64_t *p_stride_x = nullptr;
     const int64_t *p_stride_y = nullptr;
@@ -248,8 +248,8 @@ struct KronGradOpFunctor {
     if (dx) {
       auto eigen_dout_x = EigenMatrix<T>::Reshape(dout_x, 1);
       auto eigen_vec_dx = EigenVector<T>::Flatten(*dx);
-      if constexpr (std::is_same_v<T, phi::dtype::float16> ||
-                    std::is_same_v<T, phi::dtype::bfloat16>) {
+      if constexpr (std::is_same_v<T, phi::float16> ||
+                    std::is_same_v<T, phi::bfloat16>) {
         eigen_vec_dx.device(*place) = eigen_dout_x.template cast<float>()
                                           .sum(reduce_dim)
                                           .template cast<T>();
@@ -260,8 +260,8 @@ struct KronGradOpFunctor {
     if (dy) {
       auto eigen_dout_y = EigenMatrix<T>::Reshape(dout_y, 1);
       auto eigen_vec_dy = EigenVector<T>::Flatten(*dy);
-      if constexpr (std::is_same_v<T, phi::dtype::float16> ||
-                    std::is_same_v<T, phi::dtype::bfloat16>) {
+      if constexpr (std::is_same_v<T, phi::float16> ||
+                    std::is_same_v<T, phi::bfloat16>) {
         eigen_vec_dy.device(*place) = eigen_dout_y.template cast<float>()
                                           .sum(reduce_dim)
                                           .template cast<T>();

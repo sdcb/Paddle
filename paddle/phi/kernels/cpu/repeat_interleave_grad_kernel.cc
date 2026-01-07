@@ -30,6 +30,7 @@ void RepeatInterleaveWithTensorIndexGradKernel(
     const DenseTensor& repeats_tensor,
     const DenseTensor& out_grad,
     int dim,
+    int64_t output_size UNUSED,
     DenseTensor* x_grad) {
   auto input_dim = x_grad->dims();
   if (dim < 0) {
@@ -61,12 +62,12 @@ void RepeatInterleaveWithTensorIndexGradKernel(
 
   phi::DeviceContextPool::Instance().Get(repeats_tensor.place());
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::RepeatsTensor2IndexTensorFunctor<Context, int>()(
+    funcs::RepeatsTensor2IndexTensorFunctor<Context, int>()(
         dev_ctx, repeats_tensor, &index);
     IndexSelectGradInner<Context, T, int>(
         dev_ctx, out_grad, index, x_grad, dim);
   } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::RepeatsTensor2IndexTensorFunctor<Context, int64_t>()(
+    funcs::RepeatsTensor2IndexTensorFunctor<Context, int64_t>()(
         dev_ctx, repeats_tensor, &index);
     IndexSelectGradInner<Context, T, int64_t>(
         dev_ctx, out_grad, index, x_grad, dim);
@@ -79,6 +80,7 @@ void RepeatInterleaveGradKernel(const Context& dev_ctx,
                                 const DenseTensor& out_grad,
                                 int repeats,
                                 int dim,
+                                int64_t output_size UNUSED,
                                 DenseTensor* x_grad) {
   if (x_grad && x_grad->numel() == 0) {
     dev_ctx.template Alloc<T>(x_grad);
@@ -111,7 +113,7 @@ PD_REGISTER_KERNEL(repeat_interleave_with_tensor_index_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(repeat_interleave_grad,
                    CPU,
@@ -121,4 +123,4 @@ PD_REGISTER_KERNEL(repeat_interleave_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}

@@ -17,6 +17,7 @@
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/gpu/graph_send_recv_funcs.h"
@@ -31,8 +32,8 @@ void CalculateXEGradForMinMax(const Context& dev_ctx,
                               const T* out_grad,
                               const T* x_data,
                               const T* e_data,
-                              const phi::DDim& x_dims,
-                              const phi::DDim& e_dims,
+                              const DDim& x_dims,
+                              const DDim& e_dims,
                               const IndexT* s_index,
                               const IndexT* d_index,
                               const std::string& message_op,
@@ -100,9 +101,9 @@ void CalculateXGrad(const Context& dev_ctx,
                     const T* out_grad,
                     const T* x_data,
                     const T* e_data,
-                    const phi::DDim& out_grad_dims,
-                    const phi::DDim& x_dims,
-                    const phi::DDim& e_dims,
+                    const DDim& out_grad_dims,
+                    const DDim& x_dims,
+                    const DDim& e_dims,
                     const IndexT* s_index,
                     const IndexT* d_index,
                     const std::string& message_op,
@@ -136,9 +137,8 @@ void CalculateXGrad(const Context& dev_ctx,
                                                    functor);
       } else {
         const auto& bcast_info = phi::CalcBCastInfo(out_grad_dims, e_dims);
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
         GraphSendRecvCUDAKernel<T,
                                 IndexT,
@@ -206,9 +206,8 @@ void CalculateXGrad(const Context& dev_ctx,
                 mul_functor,
                 sum_functor);
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
         GraphSendUERecvCUDAKernel<T,
                                   IndexT,
@@ -263,9 +262,8 @@ void CalculateXGrad(const Context& dev_ctx,
                                                    s_count);
       } else {
         const auto& bcast_info = phi::CalcBCastInfo(out_grad_dims, e_dims);
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
         ManipulateMeanGradCUDAKernel<T, IndexT>
             <<<grid, block, 0, dev_ctx.stream()>>>(out_grad,
@@ -325,9 +323,8 @@ void CalculateXGrad(const Context& dev_ctx,
                 out_len,
                 bcast_info.use_bcast);
       } else {
-        DenseTensor x_grad_v2 =
-            phi::EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
-        phi::funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
+        DenseTensor x_grad_v2 = EmptyLike<T, Context>(dev_ctx, out_grad_tensor);
+        funcs::SetConstant<Context, T>()(dev_ctx, &x_grad_v2, T(0));
         T* x_grad_v2_data = x_grad_v2.data<T>();
         ManipulateMeanGradCUDAKernelForMulX<T, IndexT>
             <<<grid_, block_, 0, dev_ctx.stream()>>>(
@@ -374,8 +371,8 @@ void CalculateEGrad(const Context& dev_ctx,
                     const T* out_grad,
                     const T* x_data,
                     const T* e_data,
-                    const phi::DDim& x_dims,
-                    const phi::DDim& e_dims,
+                    const DDim& x_dims,
+                    const DDim& e_dims,
                     const IndexT* s_index,
                     const IndexT* d_index,
                     const std::string& message_op,
@@ -471,7 +468,9 @@ void GraphSendUERecvGradOpCUDAKernelLaunchHelper(
     DenseTensor* e_grad,
     const DenseTensor* dst_count = nullptr,
     const DenseTensor* out = nullptr) {
-  const int& index_size = dst_index.dims()[0];
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = dst_index.dims()[0];
 
   dev_ctx.template Alloc<T>(x_grad);
   T* x_grad_data = x_grad->data<T>();
@@ -569,6 +568,16 @@ void SendUERecvGradKernel(const Context& dev_ctx,
                           DenseTensor* x_grad,
                           DenseTensor* y_grad) {
   auto index_type = src_index.dtype();
+
+  if (out_grad.numel() == 0 || x.numel() == 0 || y.numel() == 0 ||
+      src_index.numel() == 0 || dst_index.numel() == 0) {
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(x_grad->dims())), 0, x_grad);
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(y_grad->dims())), 0, y_grad);
+    return;
+  }
+
   if (index_type == phi::DataType::INT32) {
     GraphSendUERecvGradOpCUDAKernelLaunchHelper<Context, T, int32_t>(
         dev_ctx,
@@ -610,4 +619,4 @@ PD_REGISTER_KERNEL(send_ue_recv_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

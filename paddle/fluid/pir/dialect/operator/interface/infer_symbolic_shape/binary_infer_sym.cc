@@ -684,6 +684,16 @@ bool DepthwiseConv2dOpInferSymbolicShape(
   return Conv2dOpInferSymbolicShape(op, infer_context);
 }
 
+bool DepthwiseConv2dBiasOpInferSymbolicShape(
+    pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
+  return Conv2dOpInferSymbolicShape(op, infer_context);
+}
+
+bool DepthwiseConv3dBiasOpInferSymbolicShape(
+    pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
+  return Conv3dOpInferSymbolicShape(op, infer_context);
+}
+
 bool DepthwiseConv2dTransposeOpInferSymbolicShape(
     pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
   return Conv2dTransposeOpInferSymbolicShape(op, infer_context);
@@ -762,6 +772,11 @@ bool DropoutOpInferSymbolicShape(
   return true;
 }
 
+bool Dropout_OpInferSymbolicShape(
+    pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
+  return DropoutOpInferSymbolicShape(op, infer_context);
+}
+
 bool EmbeddingOpInferSymbolicShape(
     pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
   const std::vector<symbol::DimExpr> &x_dims =
@@ -785,17 +800,6 @@ bool EmbeddingOpInferSymbolicShape(
 
 bool EqualAllOpInferSymbolicShape(
     pir::Operation *op, pir::InferSymbolicShapeContext *infer_context) {
-  const auto &x_dims =
-      infer_context->GetShapeOrDataForValue(op->operand_source(0)).shape();
-  const auto &y_dims =
-      infer_context->GetShapeOrDataForValue(op->operand_source(1)).shape();
-
-  PADDLE_ENFORCE_GE(
-      x_dims.size(),
-      y_dims.size(),
-      common::errors::InvalidArgument(
-          "The size of dim_y should not be greater than dim_x's."));
-
   std::vector<symbol::DimExpr> out_dims =
       {};  // Adjust the dimensions as necessary
   infer_context->SetShapeOrDataForValue(
@@ -969,6 +973,7 @@ bool GatherOpInferSymbolicShape(pir::Operation *op,
             "3 when the axis is not set."));
     const auto &axis_shape_or_data =
         infer_context->GetShapeOrDataForValue(op->operand_source(2));
+    // NOTE(large-tensor): axis is a small integer
     axis =
         static_cast<int>(axis_shape_or_data.data().value()[0].Get<int64_t>());
   }
@@ -979,7 +984,10 @@ bool GatherOpInferSymbolicShape(pir::Operation *op,
   const std::vector<symbol::DimExpr> &index_sym_shape =
       index_shape_or_data.shape();
 
-  if (axis < 0) axis += input_sym_shape.size();
+  if (axis < 0) {
+    // NOTE(large-tensor): tensor rank is a small integer
+    axis += static_cast<int>(input_sym_shape.size());
+  }
 
   const auto &out_sym_shape = [&] {
     std::vector<symbol::DimExpr> out_sym_shape;
@@ -1277,13 +1285,18 @@ bool LstsqOpInferSymbolicShape(pir::Operation *op,
           symbol::TensorShapeOrDataDimExprs(batch_dims_vec)});
 
   std::vector<symbol::DimExpr> residuals_shape{};
+  std::string driver = op->attribute<pir::StrAttribute>("driver").AsString();
   if (m.isa<int64_t>() && n.isa<int64_t>()) {
     int64_t m_value = m.Get<std::int64_t>();
     int64_t n_value = n.Get<std::int64_t>();
-    if (m_value > n_value) {
-      batch_dims_vec.emplace_back(nrhs);
-      residuals_shape = batch_dims_vec;
-      batch_dims_vec.pop_back();
+    if (m_value > n_value && driver != "gelsy") {
+      if (driver == "gelss" || driver == "gelsd") {
+        residuals_shape.emplace_back(infer_context->GetNextSymName());
+      } else {
+        batch_dims_vec.emplace_back(nrhs);
+        residuals_shape = batch_dims_vec;
+        batch_dims_vec.pop_back();
+      }
     } else {
       residuals_shape.emplace_back(0);
     }
@@ -2221,11 +2234,11 @@ bool TakeAlongAxisOpInferSymbolicShape(
   const auto &out_sym_shape = [&] {
     std::vector<symbol::DimExpr> out_sym_shape;
     for (int i = 0; i < axis; ++i) {
-      out_sym_shape.push_back(arr_sym_shape[i]);
+      out_sym_shape.push_back(indices_sym_shape[i]);
     }
     out_sym_shape.push_back(indices_sym_shape[axis]);
     for (size_t i = axis + 1; i < arr_sym_shape.size(); ++i) {
-      out_sym_shape.push_back(arr_sym_shape[i]);
+      out_sym_shape.push_back(indices_sym_shape[i]);
     }
     return out_sym_shape;
   }();

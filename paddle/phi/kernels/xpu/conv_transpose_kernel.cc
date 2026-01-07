@@ -379,13 +379,13 @@ void Conv3dTransposeKernel(const Context& dev_ctx,
            "NCDHW) or NHWC(in Python, it is specified as NDHWC) in "
            "conv3d_transpose op.")));
 
-  phi::DDim in_data_dims;
+  DDim in_data_dims;
   if (data_format == "NHWC") {
     in_data_dims = common::slice_ddim(x.dims(), 1, x.dims().size() - 1);
   } else {
     in_data_dims = common::slice_ddim(x.dims(), 2, x.dims().size());
   }
-  phi::DDim filter_data_dims =
+  DDim filter_data_dims =
       common::slice_ddim(filter.dims(), 2, filter.dims().size());
 
   std::vector<int64_t> ksize = common::vectorize<int64_t>(filter_data_dims);
@@ -439,7 +439,7 @@ void Conv3dTransposeKernel(const Context& dev_ctx,
 
   int fc_calc_type = GetConvCalcType<XPUType>();
   PD_VISIT_XPU_CONV_TYPES(XPUType, fc_calc_type, "conv3d_transpose", [&] {
-    using XPUTypeFP16 = typename XPUTypeTrait<phi::dtype::float16>::Type;
+    using XPUTypeFP16 = typename XPUTypeTrait<phi::float16>::Type;
     using RealTGEMM = std::conditional_t<
         (
             // 如果 XPUType 是 XPUTypeFP16 且 TGEMM 不是 FP16 或 int16
@@ -514,18 +514,18 @@ PD_REGISTER_KERNEL(depthwise_conv2d_transpose,
                    ALL_LAYOUT,
                    phi::DepthwiseConv2dTransposeKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(conv2d_transpose,
                    XPU,
                    ALL_LAYOUT,
                    phi::Conv2dTransposeKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(conv3d_transpose,
                    XPU,
                    ALL_LAYOUT,
                    phi::Conv3dTransposeKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}

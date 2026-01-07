@@ -77,7 +77,7 @@ void moe_dispatch_grad(
 
   // output
   DenseTensor x_grad_tmp =
-      phi::Empty<T, Context>(dev_ctx, {num_rows, k, hidden_size});
+      Empty<T, Context>(dev_ctx, {num_rows, k, hidden_size});
 
   // ctx
   using XPUType = typename XPUTypeTrait<T>::Type;
@@ -153,5 +153,5 @@ PD_REGISTER_KERNEL(moe_gate_dispatch_grad,
                    ALL_LAYOUT,
                    phi::MoeGateDispatchGradKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

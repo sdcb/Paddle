@@ -15,6 +15,7 @@
 #pragma once
 
 #include <chrono>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -91,6 +92,8 @@ class ProcessGroupNCCL final : public ProcessGroupWithStream {
       int nccl_comm_init_option = 0,
       std::shared_ptr<phi::distributed::NCCLConfig> nccl_config = nullptr);
   ~ProcessGroupNCCL();
+
+  void EraseStream(const phi::DenseTensor& tensor) const override;
 
   std::string GetBackendName() const override { return "NCCL"; }
 
@@ -197,6 +200,8 @@ class ProcessGroupNCCL final : public ProcessGroupWithStream {
 
   void Shutdown();
   void Restart();
+  phi::CUDAStream GetStream(const Place& place);
+  void SetOuterEventWait(bool outer_wait);
 
   void EagerConnectRingExchange(
       std::shared_ptr<phi::distributed::NCCLConfig> nccl_config);
@@ -249,18 +254,7 @@ class ProcessGroupNCCL final : public ProcessGroupWithStream {
   phi::distributed::NCCLCommContext* GetCommContext(
       const std::string* key = nullptr);
 
-  void EraseTensorHolders() {
-    for (const auto& allocation_stream : allocation_stream_pairs_) {
-      auto holder_ptr = allocation_stream.first.lock();
-      if (holder_ptr) {
-        memory::EraseStream(holder_ptr, allocation_stream.second);
-      }
-    }
-    VLOG(5) << "After task wait/synchronize, total "
-            << allocation_stream_pairs_.size()
-            << " tensor(s) allocation stream have been removed.";
-    allocation_stream_pairs_.clear();
-  }
+  void EraseTensorHolders();
 
   virtual void StartCoalescing();
 
@@ -283,7 +277,7 @@ class ProcessGroupNCCL final : public ProcessGroupWithStream {
 
   uint64_t comm_seq_{0};
   std::unordered_map<std::string, uint64_t> p2p_comm_seq_;
-  std::unordered_map<std::string, std::string> place_to_group_key_;
+  std::map<std::string, std::string> place_to_group_key_;
 
   // TODO(sunyilun): attrs below will be removed later
   std::mutex mutex_;
@@ -305,6 +299,8 @@ class ProcessGroupNCCL final : public ProcessGroupWithStream {
       place_to_p2p_opts_;
   int64_t create_count_;
   std::shared_ptr<phi::distributed::NCCLConfig> nccl_config_ptr_;
+
+  bool outer_wait_{false};
 };
 
 }  //  namespace distributed

@@ -16,6 +16,7 @@
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/common/amp_type_traits.h"
+#include "paddle/phi/common/data_type.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/expand_kernel.h"
 #include "paddle/phi/kernels/funcs/broadcast_function.h"
@@ -25,28 +26,37 @@ namespace phi {
 template <typename T>
 struct LerpElementWiseDirectCUDAFunctor {
   HOSTDEVICE inline T operator()(const T x, const T y, const T weight) const {
-    return x + weight * (y - x);
+    if (abs(static_cast<float>(weight)) < 0.5f) {
+      return x + weight * (y - x);
+    } else {
+      return y - (y - x) * (static_cast<T>(1) - weight);
+    }
   }
 };
 
-template <typename T>
+template <typename T, typename WeightT = T>
 struct LerpScalarDirectCUDAFunctor {
-  const T *weight_;
+  const WeightT* weight_;
 
-  HOSTDEVICE inline LerpScalarDirectCUDAFunctor(const T *weight)
+  HOSTDEVICE inline LerpScalarDirectCUDAFunctor(const WeightT* weight)
       : weight_(weight) {}
 
   HOSTDEVICE inline T operator()(const T x, const T y) const {
-    return x + weight_[0] * (y - x);
+    T weight_scalar = static_cast<T>(weight_[0]);
+    if (abs(static_cast<float>(weight_[0])) < 0.5f) {
+      return x + weight_scalar * (y - x);
+    } else {
+      return y - (y - x) * (static_cast<T>(1) - weight_scalar);
+    }
   }
 };
 
 template <typename T, typename Context>
-void LerpKernel(const Context &dev_ctx,
-                const DenseTensor &x,
-                const DenseTensor &y,
-                const DenseTensor &weight,
-                DenseTensor *out) {
+void LerpKernel(const Context& dev_ctx,
+                const DenseTensor& x,
+                const DenseTensor& y,
+                const DenseTensor& weight,
+                DenseTensor* out) {
   if (out && out->numel() == 0) {
     dev_ctx.template Alloc<T>(out);
     return;
@@ -62,20 +72,26 @@ void LerpKernel(const Context &dev_ctx,
           rank));
 
   dev_ctx.template Alloc<T>(out);
-  std::vector<DenseTensor *> outputs = {out};
+  std::vector<DenseTensor*> outputs = {out};
 
-  std::vector<const DenseTensor *> inputs;
+  std::vector<const DenseTensor*> inputs;
   if (weight.numel() == 1) {
-    const T *weight_ptr = weight.data<T>();
     inputs.reserve(2);
     inputs.emplace_back(&x);
     inputs.emplace_back(&y);
-    auto functor = LerpScalarDirectCUDAFunctor<T>(weight_ptr);
-    phi::funcs::BroadcastKernel<T>(dev_ctx, inputs, &outputs, functor);
+    if (weight.dtype() == DataType::FLOAT64) {
+      const double* weight_ptr = weight.data<double>();
+      auto functor = LerpScalarDirectCUDAFunctor<T, double>(weight_ptr);
+      funcs::BroadcastKernel<T>(dev_ctx, inputs, &outputs, functor);
+    } else {
+      const T* weight_ptr = weight.data<T>();
+      auto functor = LerpScalarDirectCUDAFunctor<T>(weight_ptr);
+      funcs::BroadcastKernel<T>(dev_ctx, inputs, &outputs, functor);
+    }
   } else {
     inputs.reserve(3);
     auto functor = LerpElementWiseDirectCUDAFunctor<T>();
-    DenseTensor b_min = phi::EmptyLike<T>(dev_ctx, *out);
+    DenseTensor b_min = EmptyLike<T>(dev_ctx, *out);
     if (x.dims().size() != y.dims().size() &&
         weight.dims().size() != y.dims().size()) {
       if (x.dims().size() < y.dims().size() &&
@@ -106,7 +122,7 @@ void LerpKernel(const Context &dev_ctx,
       inputs.emplace_back(&y);
       inputs.emplace_back(&weight);
     }
-    phi::funcs::BroadcastKernel<T>(dev_ctx, inputs, &outputs, functor);
+    funcs::BroadcastKernel<T>(dev_ctx, inputs, &outputs, functor);
   }
 }
 
@@ -116,7 +132,7 @@ PD_REGISTER_KERNEL(lerp,
                    GPU,
                    ALL_LAYOUT,
                    phi::LerpKernel,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    float,
                    double) {}

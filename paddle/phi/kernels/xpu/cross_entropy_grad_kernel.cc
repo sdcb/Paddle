@@ -33,11 +33,14 @@ void CrossEntropyWithSoftmaxGradKernel(const Context& dev_ctx,
                                        DenseTensor* logit_grad) {
   using XPUType = typename XPUTypeTrait<T>::Type;
   dev_ctx.template Alloc<T>(logit_grad);
+  if (logit_grad->numel() == 0) {
+    return;
+  }
 
   const int rank = logit_grad->dims().size();
-  const int axis = phi::funcs::CanonicalAxis(axis_in, rank);
-  const int64_t n = phi::funcs::SizeToAxis(axis, logit_grad->dims());
-  const int64_t d = phi::funcs::SizeFromAxis(axis, logit_grad->dims());
+  const int axis = funcs::CanonicalAxis(axis_in, rank);
+  const int64_t n = funcs::SizeToAxis(axis, logit_grad->dims());
+  const int64_t d = funcs::SizeFromAxis(axis, logit_grad->dims());
 
   int r = 0;
 
@@ -175,5 +178,5 @@ PD_REGISTER_KERNEL(cross_entropy_with_softmax_grad,
                    ALL_LAYOUT,
                    phi::CrossEntropyWithSoftmaxGradKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

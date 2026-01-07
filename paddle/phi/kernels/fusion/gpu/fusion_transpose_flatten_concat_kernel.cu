@@ -17,7 +17,6 @@
 
 #include "paddle/common/errors.h"
 #include "paddle/phi/backends/gpu/gpu_dnn.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -60,7 +59,7 @@ void TransposeFlattenConcatFusionKernel(
 
   T* odata = out->data<T>();
   for (auto& item : x) {
-    auto perm_shape = phi::funcs::GetPermuteShape(trans_axis, item->dims());
+    auto perm_shape = funcs::GetPermuteShape(trans_axis, item->dims());
     int osize = 1;
     auto idims = item->dims();
     for (int i = 0; i < rank; i++) {
@@ -107,7 +106,7 @@ void TransposeFlattenConcatFusionKernel(
     if (concat_axis == 0) {
       odata += osize;
     } else {
-      auto flat_shape = phi::funcs::GetFlattenShape(flatten_axis, perm_shape);
+      auto flat_shape = funcs::GetFlattenShape(flatten_axis, perm_shape);
       odata += flat_shape[1];
     }
   }

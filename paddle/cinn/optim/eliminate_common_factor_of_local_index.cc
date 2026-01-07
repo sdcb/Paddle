@@ -16,6 +16,7 @@
 
 #include <unordered_map>
 
+#include "paddle/cinn/common/ir_util.h"
 #include "paddle/cinn/ir/ir.h"
 #include "paddle/cinn/ir/ir_mutator.h"
 #include "paddle/cinn/ir/ir_printer.h"
@@ -165,9 +166,9 @@ CollectLocalVarToIndexes(ir::stmt::BlockRef func_body) {
 }
 
 int ExtractMulNumberFromExpr(const ir::Expr& expr) {
-  ir::Expr simplied_expr = optim::ArithSimplify(expr);
-  if (simplied_expr.is_constant()) {
-    return static_cast<int>(simplied_expr.get_constant());
+  ir::Expr simplified_expr = optim::ArithSimplify(expr);
+  if (simplified_expr.is_constant()) {
+    return static_cast<int>(simplified_expr.get_constant());
   } else if (expr.As<ir::Mul>()) {
     auto mul = expr.As<ir::Mul>();
     return ExtractMulNumberFromExpr(mul->a()) *
@@ -180,9 +181,9 @@ int ExtractMulNumberFromExpr(const ir::Expr& expr) {
 }
 
 int ExtractAddNumberFromExpr(const ir::Expr& expr) {
-  ir::Expr simplied_expr = optim::ArithSimplify(expr);
-  if (simplied_expr.is_constant()) {
-    return static_cast<int>(simplied_expr.get_constant());
+  ir::Expr simplified_expr = optim::ArithSimplify(expr);
+  if (simplified_expr.is_constant()) {
+    return static_cast<int>(simplified_expr.get_constant());
   } else if (expr.As<ir::Add>()) {
     auto add = expr.As<ir::Add>();
     return ExtractAddNumberFromExpr(add->a()) +
@@ -202,8 +203,8 @@ int gcd(int a, int b) {
 }
 
 ir::Expr ExtractSymbolicFromExpr(const ir::Expr& expr) {
-  ir::Expr simplied_expr = optim::ArithSimplify(expr);
-  if (simplied_expr.is_constant()) {
+  ir::Expr simplified_expr = optim::ArithSimplify(expr);
+  if (simplified_expr.is_constant()) {
     return ir::Expr(0);
   } else if (expr.As<ir::_Var_>()) {
     auto var = expr.As<ir::_Var_>();
@@ -531,6 +532,14 @@ class TransformLocalIndicesVisitor : public ir::IRMutator<>,
   void ExtractIterFromIndice(
       const ir::Expr& expr,
       std::unordered_map<std::string, ir::Expr>* name_to_iter) {
+    // Set OptLevel::kLevel3 to enable BoundSimplify
+    ir::Expr simplified_expr =
+        optim::ArithSimplify(expr, ir::IndexExpr::OptLevel::kLevel3);
+    if (cinn::common::is_zero(simplified_expr)) {
+      // If index(k) can be simplified into Expr(0),
+      // we should not extract iter k.
+      return;
+    }
     if (expr.As<ir::_Var_>()) {
       const auto var = expr.As<ir::_Var_>();
       if (name_to_iter->count(var->name) == 0) {

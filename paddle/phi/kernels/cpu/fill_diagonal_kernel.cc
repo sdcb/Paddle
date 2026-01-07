@@ -32,7 +32,7 @@ void FillDiagonalKernel(const Context& dev_ctx,
   T* out_data = dev_ctx.template Alloc<T>(out);
   if (out && out->numel() == 0) return;
 
-  phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
 
   auto out_dims = out->dims();
   auto strides = funcs::CalStride(out_dims);
@@ -66,5 +66,5 @@ PD_REGISTER_KERNEL(fill_diagonal,
                    double,
                    int64_t,
                    int,
-                   phi::dtype::float16,
+                   phi::float16,
                    bool) {}

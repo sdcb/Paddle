@@ -17,7 +17,6 @@
 #include "glog/logging.h"
 
 #include "paddle/phi/backends/xpu/xpu_context.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/enforce.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
@@ -113,21 +112,21 @@ void AdamDenseKernel(
 
   DenseTensor xpu_param_out;
   float* param_out_ptr = nullptr;
-  const phi::DenseTensorMeta meta_param(DataType::FLOAT32, param_out->dims());
+  const DenseTensorMeta meta_param(DataType::FLOAT32, param_out->dims());
   xpu_param_out.set_meta(meta_param);
   funcs::GetOutDataPointer<Context, float>(
       param_out, &xpu_param_out, &param_out_ptr, dev_ctx);
 
   DenseTensor xpu_mom1_out;
   float* mom1_out_ptr = nullptr;
-  const phi::DenseTensorMeta meta_mom1(DataType::FLOAT32, moment1_out->dims());
+  const DenseTensorMeta meta_mom1(DataType::FLOAT32, moment1_out->dims());
   xpu_mom1_out.set_meta(meta_mom1);
   funcs::GetOutDataPointer<Context, float>(
       moment1_out, &xpu_mom1_out, &mom1_out_ptr, dev_ctx);
 
   DenseTensor xpu_mom2_out;
   float* mom2_out_ptr = nullptr;
-  const phi::DenseTensorMeta meta_mom2(DataType::FLOAT32, moment2_out->dims());
+  const DenseTensorMeta meta_mom2(DataType::FLOAT32, moment2_out->dims());
   xpu_mom2_out.set_meta(meta_mom2);
   funcs::GetOutDataPointer<Context, float>(
       moment2_out, &xpu_mom2_out, &mom2_out_ptr, dev_ctx);
@@ -496,7 +495,7 @@ void MergedAdamKernel(
 }  // namespace phi
 
 PD_REGISTER_KERNEL(
-    adam, XPU, ALL_LAYOUT, phi::AdamDenseKernel, float, phi::dtype::float16) {
+    adam, XPU, ALL_LAYOUT, phi::AdamDenseKernel, float, phi::float16) {
   // Skip beta1_pow, beta2_pow, skip_update data transform
   kernel->InputAt(6).SetBackend(phi::Backend::ALL_BACKEND);
   kernel->InputAt(7).SetBackend(phi::Backend::ALL_BACKEND);

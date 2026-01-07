@@ -79,7 +79,7 @@ void SliceKernel(const Context& dev_ctx,
     }
   }
 
-  phi::funcs::CheckAndUpdateSliceAttrs(in_dims, axes, &starts, &ends);
+  funcs::CheckAndUpdateSliceAttrs(in_dims, axes, &starts, &ends);
   slice_dims = funcs::GetSliceDims<int64_t>(
       in_dims, axes, starts, ends, nullptr, nullptr);
   out_dims = funcs::GetDecreasedDims(slice_dims, decrease_axis);
@@ -133,7 +133,7 @@ void SliceKernel(const Context& dev_ctx,
 
 #ifdef PADDLE_WITH_XPU_FFT
 template <>
-void SliceKernel<phi::dtype::complex<float>, XPUContext>(
+void SliceKernel<phi::complex64, XPUContext>(
     const XPUContext& dev_ctx,
     const DenseTensor& input,
     const std::vector<int64_t>& axes,
@@ -142,7 +142,7 @@ void SliceKernel<phi::dtype::complex<float>, XPUContext>(
     const std::vector<int64_t>& infer_flags,
     const std::vector<int64_t>& decrease_axis,
     DenseTensor* out) {
-  using T = phi::dtype::complex<float>;
+  using T = phi::complex64;
   if (out->numel() == 0) {
     dev_ctx.template Alloc<T>(out);
     return;
@@ -191,7 +191,7 @@ void SliceKernel<phi::dtype::complex<float>, XPUContext>(
     }
   }
 
-  phi::funcs::CheckAndUpdateSliceAttrs(in_dims, axes, &starts, &ends);
+  funcs::CheckAndUpdateSliceAttrs(in_dims, axes, &starts, &ends);
   slice_dims = funcs::GetSliceDims<int64_t>(
       in_dims, axes, starts, ends, nullptr, nullptr);
   out_dims = funcs::GetDecreasedDims(slice_dims, decrease_axis);
@@ -268,10 +268,10 @@ PD_REGISTER_KERNEL(slice,
                    ALL_LAYOUT,
                    phi::SliceKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
 #ifdef PADDLE_WITH_XPU_FFT
-                   phi::dtype::complex<float>,
+                   phi::complex64,
 #endif
                    double,
                    uint8_t,

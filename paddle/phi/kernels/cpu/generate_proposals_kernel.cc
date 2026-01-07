@@ -15,6 +15,7 @@
 #include "paddle/phi/kernels/generate_proposals_kernel.h"
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/detection/nms_util.h"
 #include "paddle/phi/kernels/funcs/gather.h"
 
@@ -218,10 +219,10 @@ std::pair<DenseTensor, DenseTensor> ProposalForOneImage(
   var_sel.Resize(common::make_ddim({index_t.numel(), 4}));
   dev_ctx.template Alloc<T>(&var_sel);
 
-  phi::funcs::CPUGather<T>(dev_ctx, scores_slice, index_t, &scores_sel);
-  phi::funcs::CPUGather<T>(dev_ctx, bbox_deltas_slice, index_t, &bbox_sel);
-  phi::funcs::CPUGather<T>(dev_ctx, anchors, index_t, &anchor_sel);
-  phi::funcs::CPUGather<T>(dev_ctx, variances, index_t, &var_sel);
+  funcs::CPUGather<T>(dev_ctx, scores_slice, index_t, &scores_sel);
+  funcs::CPUGather<T>(dev_ctx, bbox_deltas_slice, index_t, &bbox_sel);
+  funcs::CPUGather<T>(dev_ctx, anchors, index_t, &anchor_sel);
+  funcs::CPUGather<T>(dev_ctx, variances, index_t, &var_sel);
 
   DenseTensor proposals;
   proposals.Resize(common::make_ddim({index_t.numel(), 4}));
@@ -243,7 +244,7 @@ std::pair<DenseTensor, DenseTensor> ProposalForOneImage(
                  pixel_offset);
   // Handle the case when there is no keep index left
   if (keep.numel() == 0) {
-    phi::funcs::SetConstant<phi::CPUContext, T> set_zero;
+    funcs::SetConstant<phi::CPUContext, T> set_zero;
     bbox_sel.Resize(common::make_ddim({1, 4}));
     dev_ctx.template Alloc<T>(&bbox_sel);
     set_zero(dev_ctx, &bbox_sel, static_cast<T>(0));
@@ -259,13 +260,13 @@ std::pair<DenseTensor, DenseTensor> ProposalForOneImage(
   dev_ctx.template Alloc<T>(&bbox_sel);
   scores_filter.Resize(common::make_ddim({keep.numel(), 1}));
   dev_ctx.template Alloc<T>(&scores_filter);
-  phi::funcs::CPUGather<T>(dev_ctx, proposals, keep, &bbox_sel);
-  phi::funcs::CPUGather<T>(dev_ctx, scores_sel, keep, &scores_filter);
+  funcs::CPUGather<T>(dev_ctx, proposals, keep, &bbox_sel);
+  funcs::CPUGather<T>(dev_ctx, scores_sel, keep, &scores_filter);
   if (nms_thresh <= 0) {
     return std::make_pair(bbox_sel, scores_filter);
   }
 
-  DenseTensor keep_nms = phi::funcs::NMS<T>(
+  DenseTensor keep_nms = funcs::NMS<T>(
       dev_ctx, &bbox_sel, &scores_filter, nms_thresh, eta, pixel_offset);
 
   if (post_nms_top_n > 0 && post_nms_top_n < keep_nms.numel()) {
@@ -276,8 +277,8 @@ std::pair<DenseTensor, DenseTensor> ProposalForOneImage(
   dev_ctx.template Alloc<T>(&proposals);
   scores_sel.Resize(common::make_ddim({keep_nms.numel(), 1}));
   dev_ctx.template Alloc<T>(&scores_sel);
-  phi::funcs::CPUGather<T>(dev_ctx, bbox_sel, keep_nms, &proposals);
-  phi::funcs::CPUGather<T>(dev_ctx, scores_filter, keep_nms, &scores_sel);
+  funcs::CPUGather<T>(dev_ctx, bbox_sel, keep_nms, &proposals);
+  funcs::CPUGather<T>(dev_ctx, scores_filter, keep_nms, &scores_sel);
 
   return std::make_pair(proposals, scores_sel);
 }
@@ -314,6 +315,18 @@ void GenerateProposalsKernel(const Context& dev_ctx,
 
   rpn_roi_probs->Resize(common::make_ddim({scores.numel(), 1}));
   dev_ctx.template Alloc<T>(rpn_roi_probs);
+  if (scores.numel() == 0) {
+    rpn_rois->Resize(common::make_ddim({0, 4}));
+    if (rpn_rois_num != nullptr) {
+      rpn_rois_num->Resize(common::make_ddim({}));
+      phi::Full<int64_t, Context>(
+          dev_ctx,
+          phi::IntArray(common::vectorize(rpn_rois_num->dims())),
+          0,
+          rpn_rois_num);
+    }
+    return;
+  }
 
   DenseTensor bbox_deltas_swap, scores_swap;
   bbox_deltas_swap.Resize(common::make_ddim({num, h_bbox, w_bbox, c_bbox}));
@@ -322,7 +335,7 @@ void GenerateProposalsKernel(const Context& dev_ctx,
   scores_swap.Resize(common::make_ddim({num, h_score, w_score, c_score}));
   dev_ctx.template Alloc<T>(&scores_swap);
 
-  phi::funcs::Transpose<phi::CPUContext, T, 4> trans;
+  funcs::Transpose<phi::CPUContext, T, 4> trans;
   std::vector<int> axis = {0, 2, 3, 1};
   trans(dev_ctx, bbox_deltas, &bbox_deltas_swap, axis);
   trans(dev_ctx, scores, &scores_swap, axis);

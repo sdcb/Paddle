@@ -51,7 +51,7 @@ void FillDiagonalTensorKernel(const Context &dev_ctx,
                               int dim2,
                               DenseTensor *out) {
   const int64_t kMaxBlockDim = 512;
-  phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+  Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
 
   T *out_data = dev_ctx.template Alloc<T>(out);
   const T *fill_data = y.data<T>();
@@ -127,8 +127,8 @@ PD_REGISTER_KERNEL(fill_diagonal_tensor,
                    int16_t,
                    int8_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>,
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128,
                    bool) {}

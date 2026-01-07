@@ -16,6 +16,7 @@
 
 #include <vector>
 
+#include "paddle/fluid/eager/accumulation/accumulation_node.h"
 #include "paddle/fluid/eager/autograd_meta.h"
 #include "paddle/fluid/eager/to_static/run_program_impl.h"
 #include "paddle/fluid/eager/to_static/run_program_utils.h"
@@ -27,6 +28,8 @@
 #include "paddle/pir/include/core/builtin_type.h"
 #include "paddle/pir/include/core/value.h"
 #include "paddle/pir/include/dialect/control_flow/ir/cf_type.h"
+COMMON_DECLARE_bool(enable_unique_name);
+COMMON_DECLARE_string(tensor_md5_checksum_output_path);
 
 namespace egr::to_static {
 
@@ -114,7 +117,40 @@ std::vector<paddle::Tensor> filter_no_need_buffer_input_var_in_backward(
   return filter_x;
 }
 
-std::vector<paddle::Tensor> Trans2ContiguousTensors(
+std::vector<size_t> GetNonContiguousTensorIndices(
+    const std::vector<paddle::Tensor>& tensors) {
+  std::vector<size_t> need_trans_idx;
+  for (size_t idx = 0; idx < tensors.size(); idx++) {
+    auto& t = tensors[idx];
+    if (t.initialized() && t.is_dense_tensor() &&
+        !std::static_pointer_cast<phi::DenseTensor>(t.impl())
+             ->meta()
+             .is_contiguous()) {
+      need_trans_idx.push_back(idx);
+    }
+  }
+  return need_trans_idx;
+}
+
+void Trans2ContiguousTensors(const std::vector<paddle::Tensor>& tensors,
+                             const std::vector<size_t>& need_trans_idx,
+                             std::vector<paddle::Tensor>* tensors_contig) {
+  if (!need_trans_idx.empty()) {
+    tensors_contig->insert(
+        tensors_contig->end(), tensors.begin(), tensors.end());
+    for (auto idx : need_trans_idx) {
+      auto& t = tensors[idx];
+      tensors_contig->at(idx) = paddle::Tensor(
+          std::make_shared<phi::DenseTensor>(
+              paddle::experimental::Trans2Contiguous(
+                  *(std::static_pointer_cast<phi::DenseTensor>(t.impl())))),
+          t.mutable_autograd_meta(),
+          t.name());
+    }
+  }
+}
+
+std::vector<paddle::Tensor> LegacyTrans2ContiguousTensors(
     const std::vector<paddle::Tensor>& tensors) {
   std::vector<paddle::Tensor> res;
   for (const auto& t : tensors) {
@@ -188,36 +224,86 @@ std::vector<paddle::Tensor> legacy_filter_unused_input_var_in_backward(
   return filter_x;
 }
 
+std::vector<egr::AutogradMeta*> AttachAutoGradMeta(
+
+    std::vector<paddle::Tensor>& tensors,  // NOLINT
+    const std::vector<pir::Value>& values) {
+  auto GetValueBoolAttr = [](pir::Value value, const std::string& attr_name) {
+    auto bool_attr = value.attribute<pir::BoolAttribute>(attr_name);
+    return !bool_attr || bool_attr.data();
+  };
+  PADDLE_ENFORCE_EQ(tensors.size(),
+                    values.size(),
+                    common::errors::InvalidArgument(
+                        "The size of tensors (%d) must be equal to the "
+                        "size of values (%d).",
+                        tensors.size(),
+                        values.size()));
+  std::vector<egr::AutogradMeta*> result;
+  auto size = tensors.size();
+  result.reserve(tensors.size());
+  for (size_t i = 0; i < size; ++i) {
+    auto& tensor = tensors[i];
+    const auto& value = values[i];
+    auto autograd_meta = egr::EagerUtils::autograd_meta(&tensor);
+    autograd_meta->SetPersistable(false);
+    autograd_meta->SetStopGradient(GetValueBoolAttr(value, kAttrStopGradients));
+
+    if (!autograd_meta->GetMutableGradNode()) {
+      autograd_meta->SetGradNode(
+          std::make_shared<egr::GradNodeAccumulation>(tensor));
+    }
+
+    result.push_back(autograd_meta);
+  }
+  return result;
+}
+
 }  // namespace
 
-void run_program_ad_func(
+std::vector<paddle::Tensor> run_program_ad_func(
     const std::vector<paddle::Tensor>& x,
     const std::vector<paddle::Tensor>& params,
-    std::vector<paddle::Tensor*>& out,                   // NOLINT
     std::vector<paddle::framework::Scope*>& step_scope,  // NOLINT
-    const paddle::framework::AttributeMap& attrs) {
+    const paddle::framework::AttributeMap& prog_attrs,
+    const paddle::framework::AttributeMap& cuda_graph_attrs) {
   // Prepare Autograd Meta
   VLOG(2) << "start run pir run_program ad function.";
-  auto deref_out = egr::to_static::DereferenceTensors(out);
   std::vector<egr::AutogradMeta*> p_autograd_x =
       egr::EagerUtils::nullable_autograd_meta(x);
   std::vector<egr::AutogradMeta*> p_autograd_params =
       egr::EagerUtils::nullable_autograd_meta(params);
-  std::vector<egr::AutogradMeta*> p_autograd_outs =
-      egr::EagerUtils::nullable_autograd_meta(deref_out);
+  // Check LeafTensor if its GradNodeAccumulation TensorMeta is consistent with
+  // its TensorMeta
+  egr::CheckGradNodeAccumulation(x);
+  egr::CheckGradNodeAccumulation(params);
+  std::string unique_api_name = "Dy2St";
+  if (FLAGS_enable_unique_name) {
+    static int count = 0;
+    unique_api_name = egr::GenerateUniqueApiName(unique_api_name, count);
+  }
 
   bool trace_backward = egr::Controller::Instance().HasGrad();
   bool require_any_grad = egr::EagerUtils::ComputeRequireGrad(
       trace_backward, &p_autograd_x, &p_autograd_params);
 
   auto is_test = false;
-  if (attrs.count("is_test")) {
-    is_test = PADDLE_GET_CONST(bool, attrs.at("is_test"));
+  if (prog_attrs.count("is_test")) {
+    is_test = PADDLE_GET_CONST(bool, prog_attrs.at("is_test"));
   }
   VLOG(2) << "start run run_program with require_any_grad = "
           << require_any_grad << ", is_test = " << is_test;
-  auto x_tmp = Trans2ContiguousTensors(x);
-  auto params_tmp = Trans2ContiguousTensors(params);
+  // Note: We should only perform contiguous transformations in the presence of
+  // non-contiguous tensors. Otherwise, unnecessary overhead will be incurred
+  // during Tensor construction.
+  auto x_need_trans_idx = GetNonContiguousTensorIndices(x);
+  auto params_need_trans_idx = GetNonContiguousTensorIndices(params);
+  std::vector<paddle::Tensor> x_contig, params_contig;
+  Trans2ContiguousTensors(x, x_need_trans_idx, &x_contig);
+  Trans2ContiguousTensors(params, params_need_trans_idx, &params_contig);
+  const auto& x_tmp = x_need_trans_idx.empty() ? x : x_contig;
+  const auto& params_tmp =
+      params_need_trans_idx.empty() ? params : params_contig;
   // Call forward function
   // if require_any_grad is False, don't save any middle vars.
   int64_t place_hash_key = 0x9e3779b9;
@@ -225,22 +311,37 @@ void run_program_ad_func(
     int64_t device_type = static_cast<int64_t>(tensor.place().GetType());
     place_hash_key = hash_with_seed(place_hash_key, device_type);
   }
-  egr::to_static::RunProgramImpl(x_tmp,
-                                 params_tmp,
-                                 out,
-                                 step_scope,
-                                 require_any_grad,
-                                 attrs,
-                                 place_hash_key);
+  auto out = egr::to_static::RunProgramImpl(x_tmp,
+                                            params_tmp,
+                                            step_scope,
+                                            require_any_grad,
+                                            prog_attrs,
+                                            cuda_graph_attrs,
+                                            place_hash_key);
+  const auto& out_values =
+      PADDLE_GET_CONST(std::vector<pir::Value>, prog_attrs.at("fo_values"));
+  std::vector<egr::AutogradMeta*> p_autograd_outs =
+      AttachAutoGradMeta(out, out_values);
   if (!is_test && require_any_grad) {
     // Create GradOpNode (1 means [out_grad], 2 means [x_grad, paramx_grad])
     auto grad_node = std::make_shared<GradNodeRunProgram>(1, 2);
-
+    // Set for Record Subgraph
+    if (egr::EagerBackwardSubGraphNodeRecorder::Instance()
+            .NeedCaptureSubGraph()) {
+      VLOG(3) << "Capture the grad node" << grad_node->name() << "("
+              << grad_node.get() << ")"
+              << "for subgraph.";
+      egr::EagerBackwardSubGraphNodeRecorder::Instance().AddGradNode(
+          grad_node.get());
+    }
+    if (FLAGS_enable_unique_name) {
+      grad_node->SetNameFromAPI(unique_api_name);
+    }
     // Set place hash keys for backward
     grad_node->SetPlaceHashKey(place_hash_key);
 
     // Set Attributes
-    grad_node->SetAttrMap(attrs);
+    grad_node->SetAttrMap(prog_attrs, cuda_graph_attrs);
 
     // Clear unused x vars
     // NOTE(SigureMo): There are 2 kinds Tensor need to be filtered:
@@ -250,16 +351,16 @@ void run_program_ad_func(
     // For the first kind, we can create a empty Tensor to replace it.
     // For the second kind, we need to keep the meta only Tensor.
     auto filter_x = filter_no_need_buffer_input_var_in_backward(
-        filter_unused_input_var_in_backward(x_tmp, attrs), attrs);
+        filter_unused_input_var_in_backward(x_tmp, prog_attrs), prog_attrs);
     // Set TensorWrappers
     grad_node->SetFwdX(filter_x);
 
     std::shared_ptr<::pir::Program> backward_program = PADDLE_GET_CONST(
-        std::shared_ptr<::pir::Program>, attrs.at("backward_program"));
+        std::shared_ptr<::pir::Program>, prog_attrs.at("backward_program"));
     const auto& forward_outputs_names =
-        PADDLE_GET_CONST(std::vector<std::string>, attrs.at("fo_names"));
+        PADDLE_GET_CONST(std::vector<std::string>, prog_attrs.at("fo_names"));
     const auto& backward_params_grad_names =
-        PADDLE_GET_CONST(std::vector<std::string>, attrs.at("bp_g_names"));
+        PADDLE_GET_CONST(std::vector<std::string>, prog_attrs.at("bp_g_names"));
 
     clear_unused_out_var_in_backward(
         forward_outputs_names, backward_program->block(), step_scope[0]);
@@ -279,13 +380,41 @@ void run_program_ad_func(
                         grad_node.get(),
                         /*slot id*/ 1);
 
-    grad_node->SetGradInMeta(deref_out, 0);
-
+    grad_node->SetGradInMeta(out, 0);
     egr::EagerUtils::SetOutRankWithSlot(&p_autograd_outs, 0);
 
     // Set History for output set current Grad Node for
     egr::EagerUtils::SetHistory(&p_autograd_outs, grad_node);
   }
+  if (VLOG_IS_ON(6) || FLAGS_enable_unique_name) {
+    egr::SetTensorName(unique_api_name, "out", &out);
+  }
+  // Save the tensors checksum to file_path
+  if (!FLAGS_tensor_md5_checksum_output_path.empty()) {
+    egr::SaveTensorMD5CheckSumToFile(FLAGS_tensor_md5_checksum_output_path,
+                                     out);
+  }
+  if (VLOG_IS_ON(3) && FLAGS_enable_unique_name) {
+    const char* INPUT_PRINT_TEMPLATE =
+        "\nForward Debug Info {\nAPI_Name: %s \nInput: [%s]  \nOutput: [%s] } ";
+    std::string input_str = "";
+    std::string output_str = "";
+    const char* TENSOR_X_TEMPLATE = " \n( x , %s), ";
+    std::string input_x_str = paddle::string::Sprintf(
+        TENSOR_X_TEMPLATE, egr::EagerUtils::TensorStr(x));
+    input_str += input_x_str;
+    const char* TENSOR_PARAMS_TEMPLATE = " \n( params , %s), ";
+    std::string input_params_str = paddle::string::Sprintf(
+        TENSOR_PARAMS_TEMPLATE, egr::EagerUtils::TensorStr(params));
+
+    input_str += input_params_str;
+    const char* TENSOR_OUT_TEMPLATE = " \n( out, %s), ";
+    output_str = paddle::string::Sprintf(TENSOR_OUT_TEMPLATE,
+                                         egr::EagerUtils::TensorStr(out));
+    VLOG(3) << paddle::string::Sprintf(
+        INPUT_PRINT_TEMPLATE, unique_api_name, input_str, output_str);
+  }
+  return out;
 }
 
 void legacy_run_program_ad_func(
@@ -310,8 +439,8 @@ void legacy_run_program_ad_func(
 
   VLOG(2) << "start run run_program with require_any_grad = "
           << require_any_grad;
-  auto x_tmp = Trans2ContiguousTensors(x);
-  auto params_tmp = Trans2ContiguousTensors(params);
+  auto x_tmp = LegacyTrans2ContiguousTensors(x);
+  auto params_tmp = LegacyTrans2ContiguousTensors(params);
   // Call forward function
   // if require_any_grad is False, don't save any middle vars.
   int64_t place_hash_key = 0;

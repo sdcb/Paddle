@@ -53,6 +53,8 @@ static phi::Attribute ConvertPirAttribute2RuntimeAttribute(
     return attr.dyn_cast<pir::Int32Attribute>().data();
   } else if (attr_type_name == "pir::FloatAttribute") {
     return attr.dyn_cast<pir::FloatAttribute>().data();
+  } else if (attr_type_name == "pir::DoubleAttribute") {
+    return attr.dyn_cast<pir::DoubleAttribute>().data();
   } else if (attr_type_name == "pir::BoolAttribute") {
     return attr.dyn_cast<pir::BoolAttribute>().data();
   } else if (attr_type_name == "pir::StrAttribute") {
@@ -375,9 +377,9 @@ OneDNNPhiKernelInstruction::OneDNNPhiKernelInstruction(
   }
   TensorNameMap(op, *value_exec_info_, yaml_info_parser, inputs_, outputs_);
 
-  // Step4: Mark is_run_mkldnn_kernel=true
+  // Step4: Mark is_run_onednn_kernel=true
   phi::MetaConfig new_config = infer_meta_context_.GetMetaConfig();
-  new_config.is_run_mkldnn_kernel = true;
+  new_config.is_run_onednn_kernel = true;
   infer_meta_context_.SetMetaConfig(new_config);
 
   // Step5: Handle skip_transform_inputs
@@ -441,10 +443,10 @@ void OneDNNPhiKernelInstruction::Run() {
 
       if (elementwise_kernels.count(phi_op_name_)) {
         if (phi::OneDNNContext::tls().get_cur_paddle_data_layout() ==
-                phi::DataLayout::kNHWC &&
+                phi::DataLayout::NHWC &&
             !(kernel_key_.dtype() == phi::DataType::COMPLEX64 ||
               kernel_key_.dtype() == phi::DataType::COMPLEX128)) {
-          from_layout = phi::DataLayout::kNHWC;
+          from_layout = phi::DataLayout::NHWC;
           phi::funcs::MatchShapeToLayout(
               transed_tensor, from_layout, phi::DataLayout::ONEDNN);
         }
@@ -452,13 +454,13 @@ void OneDNNPhiKernelInstruction::Run() {
         //  Handle 'layout_transform' in
         //  ops_onednn_extra.yaml(GetKernelTypeForVar)
         if (data_format_tensors_.count(i) &&
-            input_layout_ != phi::DataLayout::kAnyLayout) {
+            input_layout_ != phi::DataLayout::ANY) {
           from_layout = input_layout_;
         }
         VLOG(6) << "from_layout = " << from_layout;
 
-        if (from_layout == DataLayout::kNHWC ||
-            from_layout == DataLayout::kNDHWC) {
+        if (from_layout == DataLayout::NHWC ||
+            from_layout == DataLayout::NDHWC) {
           phi::funcs::MatchShapeToLayout(
               transed_tensor, from_layout, phi::DataLayout::ONEDNN);
           // We register only NHWC assuming that model is consistent e.g. either
@@ -466,7 +468,7 @@ void OneDNNPhiKernelInstruction::Run() {
           phi::OneDNNContext::tls().set_cur_paddle_data_layout(from_layout);
         }
 
-        if (from_layout == DataLayout::kAnyLayout) {
+        if (from_layout == DataLayout::ANY) {
           from_layout = phi::OneDNNContext::tls().get_cur_paddle_data_layout();
         }
       }

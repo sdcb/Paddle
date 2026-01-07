@@ -33,7 +33,7 @@ void NonZeroKernel(const Context& dev_ctx,
   using XPUType = typename XPUTypeTrait<T>::Type;
 
   if (numel == 0) {
-    dev_ctx.template Alloc<T>(out);
+    dev_ctx.template Alloc<int64_t>(out);
     return;
   }
 
@@ -47,7 +47,7 @@ void NonZeroKernel(const Context& dev_ctx,
   PADDLE_ENFORCE_XDNN_SUCCESS(ret, "nonzero_count");
 
   int64_t true_num_cpu;
-  memory_utils::Copy(phi::CPUPlace(),
+  memory_utils::Copy(CPUPlace(),
                      static_cast<void*>(&true_num_cpu),
                      dev_ctx.GetPlace(),
                      static_cast<void*>(true_num),

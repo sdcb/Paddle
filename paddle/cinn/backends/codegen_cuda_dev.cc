@@ -23,9 +23,9 @@ const std::string CodeGenCudaDev::general_source_header_ =  // NOLINT
 #define CINN_WITH_CUDA
 #include "bfloat16.h"
 #include "float16.h"
+#include "float8e4m3.h"
 using cinn::common::bfloat16;
 using cinn::common::float16;
-using cinn::common::float8;
 using cinn::common::half4;
 using cinn::common::half8;
 using cinn::common::float168;
@@ -34,20 +34,21 @@ using cinn::common::float162;
 using cinn::common::bfloat168;
 using cinn::common::bfloat164;
 using cinn::common::bfloat162;
+using cinn::common::float8e4m3;
+using cinn::common::float8e4m32;
+using cinn::common::float8e4m34;
 #include <cooperative_groups.h>
 #include "cinn_cuda_runtime_source.cuh"
 )";
 const std::string CodeGenCudaDev::source_header_ =  // NOLINT
     R"(
 #pragma once
-#include <cinn_with_cuda_h>
-
 #include <bfloat16_h>
+#include <cinn_with_cuda_h>
 #include <cstdint>
 #include <float16_h>
 using cinn::common::bfloat16;
 using cinn::common::float16;
-using cinn::common::float8;
 using cinn::common::half4;
 using cinn::common::half8;
 using cinn::common::float168;
@@ -56,6 +57,9 @@ using cinn::common::float162;
 using cinn::common::bfloat168;
 using cinn::common::bfloat164;
 using cinn::common::bfloat162;
+using cinn::common::float8e4m3;
+using cinn::common::float8e4m32;
+using cinn::common::float8e4m34;
 #include <cooperative_groups.h>
 #include <cinn_cuda_runtime_source_h>
 )";

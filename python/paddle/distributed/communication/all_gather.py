@@ -85,7 +85,7 @@ def all_gather(
 
 
 def all_gather_object(
-    object_list: list[_T], obj: _T, group: Group = None
+    object_list: list[_T] | list[None], obj: _T, group: Group = None
 ) -> None:
     """
 
@@ -110,7 +110,7 @@ def all_gather_object(
             >>> import paddle.distributed as dist
 
             >>> dist.init_parallel_env()
-            >>> object_list = [] # type: ignore
+            >>> object_list = [None for _ in range(dist.get_world_size())]
             >>> if dist.get_rank() == 0:
             ...     obj = {"foo": [1, 2, 3]}
             >>> else:
@@ -119,9 +119,9 @@ def all_gather_object(
             >>> print(object_list)
             >>> # [{'foo': [1, 2, 3]}, {'bar': [4, 5, 6]}] (2 GPUs)
     """
-    assert (
-        framework.in_dynamic_mode()
-    ), "all_gather_object doesn't support static graph mode."
+    assert framework.in_dynamic_mode(), (
+        "all_gather_object doesn't support static graph mode."
+    )
 
     tensor, len_of_tensor = convert_object_to_tensor(obj)
 
@@ -139,7 +139,9 @@ def all_gather_object(
 
     tensor_list = []
     all_gather(tensor_list, input_tensor, group)
+    # Ensure object_list has enough slots for all gathered objects
+    while len(object_list) < len(tensor_list):
+        object_list.append(None)
+
     for i, tensor in enumerate(tensor_list):
-        object_list.append(
-            convert_tensor_to_object(tensor, list_len_of_tensor[i])
-        )
+        object_list[i] = convert_tensor_to_object(tensor, list_len_of_tensor[i])

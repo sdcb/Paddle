@@ -30,7 +30,7 @@ void MultiplexGradKernel(const Context& dev_ctx,
   for (size_t i = 0; i < ins_grad.size(); i++) {
     if (ins_grad[i]) {
       dev_ctx.template Alloc<T>(ins_grad[i]);
-      auto t = phi::EigenVector<T>::Flatten(*ins_grad[i]);
+      auto t = EigenVector<T>::Flatten(*ins_grad[i]);
       t.device(*dev_ctx.eigen_device()) = t.constant(static_cast<T>(0));
       idx = i;
     }
@@ -62,5 +62,5 @@ PD_REGISTER_KERNEL(multiplex_grad,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

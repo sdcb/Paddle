@@ -28,7 +28,7 @@ void GatherNdGradKernel(const Context &dev_ctx,
                         const DenseTensor &out_grad,
                         DenseTensor *x_grad) {
   dev_ctx.template Alloc<T>(x_grad);
-  auto dxt = phi::EigenVector<T>::Flatten(*x_grad);
+  auto dxt = EigenVector<T>::Flatten(*x_grad);
   auto &place = *dev_ctx.eigen_device();
   dxt.device(place) = dxt.constant(static_cast<T>(0));
   if (out_grad.numel() == 0) return;
@@ -46,9 +46,9 @@ void GatherNdGradKernel(const Context &dev_ctx,
                         phi::DataType::INT64));
 
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::ScatterNdAdd<T, int32_t>(dev_ctx, out_grad, index, x_grad);
+    funcs::ScatterNdAdd<T, int32_t>(dev_ctx, out_grad, index, x_grad);
   } else if (index_type == phi::DataType::INT64) {
-    phi::funcs::ScatterNdAdd<T, int64_t>(dev_ctx, out_grad, index, x_grad);
+    funcs::ScatterNdAdd<T, int64_t>(dev_ctx, out_grad, index, x_grad);
   }
 }
 
@@ -66,5 +66,5 @@ PD_REGISTER_KERNEL(gather_nd_grad,
                    int64_t,
                    int16_t,
                    uint8_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

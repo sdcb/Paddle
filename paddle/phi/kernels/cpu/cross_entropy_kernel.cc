@@ -17,6 +17,7 @@ limitations under the License. */
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/axis_utils.h"
 #include "paddle/phi/kernels/funcs/cross_entropy.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
@@ -33,7 +34,7 @@ void CrossEntropy(const CPUContext& dev_ctx,
                   int axis,
                   DenseTensor* out) {
   const int rank = x.dims().size();
-  const int axis_v = phi::funcs::CanonicalAxis(axis, rank);
+  const int axis_v = funcs::CanonicalAxis(axis, rank);
   int axis_dim = static_cast<int>(x.dims()[axis_v]);
 
   PADDLE_ENFORCE_GT(
@@ -46,7 +47,7 @@ void CrossEntropy(const CPUContext& dev_ctx,
 
   dev_ctx.template Alloc<T>(out);
 
-  const int n = phi::funcs::SizeToAxis(axis_v, x.dims());
+  const int n = funcs::SizeToAxis(axis_v, x.dims());
   PADDLE_ENFORCE_GT(
       n,
       0,
@@ -55,7 +56,7 @@ void CrossEntropy(const CPUContext& dev_ctx,
           "SizeToAxis of softmax is %d.",
           n));
 
-  const int d = phi::funcs::SizeFromAxis(axis_v, x.dims());
+  const int d = funcs::SizeFromAxis(axis_v, x.dims());
 
   DenseTensor x_2d(x);
   x_2d.Resize({n, d});
@@ -64,7 +65,7 @@ void CrossEntropy(const CPUContext& dev_ctx,
   DenseTensor out_2d(*out);
   out_2d.Resize({n, d / axis_dim});
 
-  phi::funcs::CrossEntropyFunctor<CPUContext, T>()(
+  funcs::CrossEntropyFunctor<CPUContext, T>()(
       dev_ctx, &out_2d, &x_2d, &label_2d, soft_label, ignore_index, axis_dim);
 }
 
@@ -79,12 +80,25 @@ void CrossEntropyWithSoftmaxKernel(const Context& dev_ctx,
                                    int axis,
                                    DenseTensor* softmax,
                                    DenseTensor* loss) {
+  if (softmax->numel() == 0) {
+    // When soft_label is False, the axis column cannot be 0. Other dimensions
+    // are the same, so the numel of softmax and loss are both 0.
+    dev_ctx.template Alloc<T>(softmax);
+    dev_ctx.template Alloc<T>(loss);
+
+    // When soft_label is True, the axis column is 1.
+    if (soft_label) {
+      phi::Full<T, Context>(
+          dev_ctx, phi::IntArray(common::vectorize(loss->dims())), 0, loss);
+    }
+    return;
+  }
   // do not with softmax op, and input is softmax
   if (!use_softmax) {
     CrossEntropy<T>(
         dev_ctx, logits, label, soft_label, ignore_index, axis, loss);
     // cause of input is softmax, copy to output softmax, directly
-    phi::Copy<Context>(dev_ctx, logits, dev_ctx.GetPlace(), false, softmax);
+    Copy<Context>(dev_ctx, logits, dev_ctx.GetPlace(), false, softmax);
     return;
   }
 

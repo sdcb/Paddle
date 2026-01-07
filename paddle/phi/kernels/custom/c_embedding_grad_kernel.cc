@@ -17,7 +17,6 @@
 #include "paddle/phi/api/backward/backward_api_base.h"
 #include "paddle/phi/api/include/api.h"
 #include "paddle/phi/backends/all_context.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 
 namespace phi {
@@ -39,12 +38,12 @@ void CEmbeddingGradKernel(const Context& dev_ctx,
     auto N = w.dims()[0];
     auto D = w.dims()[1];
 
-    auto x_tmp = std::make_shared<phi::DenseTensor>();
+    auto x_tmp = std::make_shared<DenseTensor>();
     x_tmp->ShareDataWith(ids).Resize({K});
-    auto w_tmp = std::make_shared<phi::DenseTensor>();
+    auto w_tmp = std::make_shared<DenseTensor>();
     w_tmp->set_meta(w.meta());
     dev_ctx.Alloc(w_tmp.get(), w_tmp->dtype());
-    auto out_grad_tmp = std::make_shared<phi::DenseTensor>();
+    auto out_grad_tmp = std::make_shared<DenseTensor>();
     out_grad_tmp->ShareDataWith(out_grad).Resize({K, D});
     paddle::Tensor x_tensor(x_tmp), w_tensor(w_tmp),
         out_grad_tensor(out_grad_tmp);
@@ -72,7 +71,7 @@ void CEmbeddingGradKernel(const Context& dev_ctx,
                                          false,
                                          &w_grad_tensor);
     w_grad->ShareDataWith(
-        *reinterpret_cast<phi::DenseTensor*>(w_grad_tensor.impl().get()));
+        *reinterpret_cast<DenseTensor*>(w_grad_tensor.impl().get()));
 
   } else {
     PADDLE_THROW(common::errors::Unavailable(
@@ -88,6 +87,6 @@ PD_REGISTER_KERNEL(c_embedding_grad,
                    ALL_LAYOUT,
                    phi::CEmbeddingGradKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #endif

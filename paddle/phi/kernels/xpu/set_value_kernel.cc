@@ -92,12 +92,11 @@ void SetValueImpl(const Context& dev_ctx,
   std::vector<int64_t> starts_local = starts.GetData();
   std::vector<int64_t> ends_local = ends.GetData();
   std::vector<int64_t> steps_local = steps.GetData();
-  phi::funcs::CheckAndUpdateSliceAttrs(
+  funcs::CheckAndUpdateSliceAttrs(
       in_dims, axes, &starts_local, &ends_local, &steps_local);
-  auto slice_dims = phi::funcs::GetSliceDims(
+  auto slice_dims = funcs::GetSliceDims(
       in_dims, axes, starts_local, ends_local, &steps_local);
-  auto decrease_slice_dims =
-      phi::funcs::GetDecreasedDims(slice_dims, decrease_axes);
+  auto decrease_slice_dims = funcs::GetDecreasedDims(slice_dims, decrease_axes);
 
   auto slice_dims_for_assign = decrease_slice_dims;
   if (!none_axes.empty()) {
@@ -191,7 +190,7 @@ void SetValueImpl(const Context& dev_ctx,
   // If do broadcasting on Tensor with shape [3] and [3], the result's shape
   // is [3], which is right.
 
-  phi::funcs::CheckIsDimsMatch(slice_dims_for_assign, new_value_dims);
+  funcs::CheckIsDimsMatch(slice_dims_for_assign, new_value_dims);
 
   // do broadcasting
   auto f = [](xpu::Context* xpu_ctx,
@@ -367,6 +366,10 @@ void SetTensorValueKernel(const Context& dev_ctx,
                           const std::vector<int64_t>& decrease_axes,
                           const std::vector<int64_t>& none_axes,
                           DenseTensor* out) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   SetValueKernelImpl<T, Context>(dev_ctx,
                                  x,
                                  value.data<T>(),
@@ -392,7 +395,7 @@ void SetValueKernel(const Context& dev_ctx,
                     const std::vector<int64_t>& shape,
                     const std::vector<Scalar>& values,
                     DenseTensor* out) {
-  // avoid using vector<T> if T is bool or phi::dtype::float16
+  // avoid using vector<T> if T is bool or phi::float16
   size_t value_size = sizeof(T);
   size_t values_size = values.size();
   size_t values_length = values_size * value_size;
@@ -409,7 +412,7 @@ void SetValueKernel(const Context& dev_ctx,
       reinterpret_cast<T*>(RAII_GUARD.alloc_l3_or_gm<XPUType>(values_size));
   memory_utils::Copy(dev_ctx.GetPlace(),
                      value_data,
-                     phi::CPUPlace(),
+                     CPUPlace(),
                      value_data_uint8_cpu,
                      values_length);
   auto value_dims = common::make_ddim(shape);
@@ -434,8 +437,8 @@ PD_REGISTER_KERNEL(set_value,
                    ALL_LAYOUT,
                    phi::SetValueKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    bool) {}
@@ -445,8 +448,8 @@ PD_REGISTER_KERNEL(set_value_with_tensor,
                    ALL_LAYOUT,
                    phi::SetTensorValueKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int,
                    int64_t,
                    bool) {}

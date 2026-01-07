@@ -26,7 +26,7 @@ namespace fusion {
 template <typename T>
 struct LayerNormParamTypeGeluFunctor {
   inline __host__ __device__ T operator()(const T x) const {
-    using U = phi::funcs::LayerNormParamType<T>;
+    using U = funcs::LayerNormParamType<T>;
     const U casted_x = static_cast<U>(x);
     const U temp = erf(casted_x * static_cast<U>(M_SQRT1_2));
     const U out = (casted_x * static_cast<U>(0.5) * (static_cast<U>(1) + temp));
@@ -40,7 +40,7 @@ struct LayerNormParamTypeGeluFunctor {
 template <typename T>
 struct GeluGradFunctor {
   inline __host__ __device__ T UseOut(const T x) const {
-    using U = phi::funcs::LayerNormParamType<T>;
+    using U = funcs::LayerNormParamType<T>;
     auto casted_x = static_cast<U>(x);
 
     auto first =
@@ -83,9 +83,9 @@ __global__ void FusedDropoutActBias(
     const int quant_round_type = 1,
     const float quant_max_bound = 127.0,
     const float quant_min_bound = -127.0) {
-  int col_id = blockDim.x * blockIdx.x + threadIdx.x;
-  int row_id = blockIdx.y;
-  int idx = row_id * cols + col_id;
+  int64_t col_id = static_cast<int64_t>(blockDim.x) * blockIdx.x + threadIdx.x;
+  int64_t row_id = static_cast<int64_t>(blockIdx.y);
+  int64_t idx = row_id * cols + col_id;
 
   GPURAND(StatePhilox4_32_10_t) state;
   GPURAND(_init)(seed, idx, increment, &state);
@@ -93,9 +93,9 @@ __global__ void FusedDropoutActBias(
   const T factor =
       phi::fusion::GetFactor<T>(dropout_prob, is_upscale_in_train, is_test);
 
-  for (int r = row_id; r < rows; r += blockDim.y * gridDim.y) {
-    for (int i = col_id * VecSize; i < cols;
-         i += blockDim.x * gridDim.x * VecSize) {
+  for (int64_t r = row_id; r < rows; r += blockDim.y * gridDim.y) {
+    for (int64_t i = col_id * VecSize; i < cols;
+         i += static_cast<int64_t>(blockDim.x) * gridDim.x * VecSize) {
       phi::fusion::FusedResidualDropoutBiasOneThread<T,
                                                      MaskType,
                                                      VecSize,
@@ -179,11 +179,11 @@ __global__ void FusedActBias(Functor act,
         } else {
           tmp = static_cast<T>(act(tmp));
         }
-        out_vec[unroll_idx] = phi::funcs::quant_helper(tmp,
-                                                       quant_next_in_scale,
-                                                       quant_round_type,
-                                                       quant_max_bound,
-                                                       quant_min_bound);
+        out_vec[unroll_idx] = funcs::quant_helper(tmp,
+                                                  quant_next_in_scale,
+                                                  quant_round_type,
+                                                  quant_max_bound,
+                                                  quant_min_bound);
       } else {
         if (bias) {
           out_vec[unroll_idx] = static_cast<OutType>(
@@ -218,7 +218,7 @@ void LaunchDropoutActBias(Functor act_functor,
                           const T *bias,
                           OutType *dst,
                           MaskType *mask_data,
-                          const phi::GPUContext &dev_ctx,
+                          const GPUContext &dev_ctx,
                           const float quant_last_in_scale = 1.0,
                           const float *dequant_out_scale_data = nullptr,
                           const float quant_next_in_scale = 1.0,
@@ -311,12 +311,13 @@ __global__ void FusedDropoutActGrad(Functor act_grad,
                                     const T factor,
                                     const int64_t size,
                                     T *dx) {
-  int64_t idx = blockDim.x * blockIdx.x + threadIdx.x;
+  int64_t idx = static_cast<int64_t>(blockDim.x) * blockIdx.x + threadIdx.x;
 
   using LoadT = phi::AlignedVector<T, VecSize>;
   using StoreT = phi::AlignedVector<T, VecSize>;
   using MaskLoadT = phi::AlignedVector<MaskType, VecSize>;
-  for (int i = idx * VecSize; i < size; i += blockDim.x * gridDim.x * VecSize) {
+  for (int64_t i = idx * VecSize; i < size;
+       i += static_cast<int64_t>(blockDim.x) * gridDim.x * VecSize) {
     LoadT dout_vec;
     LoadT src_vec;
     MaskLoadT mask_vec;
@@ -359,7 +360,7 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void FusedDropoutActBiasGrad(
     const int64_t cols,
     T *dx,
     T *dbias) {
-  int64_t col_id = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t col_id = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
   using LoadT = phi::AlignedVector<T, VecSize>;
   using StoreT = phi::AlignedVector<T, VecSize>;
@@ -368,7 +369,8 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void FusedDropoutActBiasGrad(
   // calculate the dx and temporary sum
   if (col_id * VecSize < cols) {
     for (int row_id = threadIdx.y; row_id < rows; row_id += blockDim.y) {
-      int index = row_id * cols + col_id * VecSize;
+      int64_t index = static_cast<int64_t>(row_id) * cols +
+                      static_cast<int64_t>(col_id) * VecSize;
       LoadT dout_vec;
       LoadT src_vec;
       LoadT bias_vec;
@@ -411,7 +413,7 @@ void LaunchDropoutActBiasGrad(Functor act_functor,
                               const uint32_t cols,
                               T *dx,
                               T *dbias,
-                              const phi::GPUContext &dev_ctx) {
+                              const GPUContext &dev_ctx) {
   const T zero = static_cast<T>(0.0);
   auto factor = dropout_prob == static_cast<float>(1.0f)
                     ? zero

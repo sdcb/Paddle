@@ -11,10 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include "paddle/phi/kernels/legacy/gpu/moe_combine_grad_kernel.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/full_kernel.h"
+#include "paddle/phi/kernels/reduce_sum_kernel.h"
 namespace phi {
 
 template <typename T>
@@ -28,7 +30,10 @@ __global__ void combine_moe_bwd_kernel(const T* x,
                                        const int64_t seqlen,
                                        const int64_t hidden_size,
                                        const int64_t n) {
-  for (int64_t i = blockIdx.x * blockDim.x + threadIdx.x; i < n;
+  for (int64_t i =
+           static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+           static_cast<int64_t>(threadIdx.x);
+       i < n;
        i += blockDim.x * gridDim.x) {
     int64_t row_i = i / hidden_size;
     int64_t slice_i = i - row_i * hidden_size;
@@ -144,13 +149,11 @@ void MoeCombineGradKernel(const Context& dev_ctx,
                           DenseTensor* grad_combine_weights_helper) {
   dev_ctx.template Alloc<T>(grad_x);
   dev_ctx.template Alloc<T>(grad_combine_weights_helper);
-  phi::Full<T, Context>(
-      dev_ctx, phi::IntArray(common::vectorize(grad_x->dims())), 0, grad_x);
-  phi::Full<T, Context>(
-      dev_ctx,
-      phi::IntArray(common::vectorize(grad_combine_weights_helper->dims())),
-      0,
-      grad_combine_weights_helper);
+  Full<T, Context>(dev_ctx, grad_x->dims(), 0, grad_x);
+  Full<T, Context>(dev_ctx,
+                   grad_combine_weights_helper->dims(),
+                   0,
+                   grad_combine_weights_helper);
   auto x_shape = x.dims();
   auto combine_weights_shape = combine_weights.dims();
   moe_combine_bwd<T, Context>(dev_ctx,
@@ -164,6 +167,64 @@ void MoeCombineGradKernel(const Context& dev_ctx,
                               combine_weights_shape[0],  // seqlen
                               x_shape[1]);               // hidden_size
 }
+template <typename T, typename Context>
+void MoeCombineAutoGradKernel(const Context& dev_ctx,
+                              const DenseTensor& x,
+                              const DenseTensor& combine_weights,
+                              const DenseTensor& scatter_index,
+                              const DenseTensor& grad_y,
+                              DenseTensor* grad_x,
+                              DenseTensor* grad_combine_weights_helper,
+                              DenseTensor* grad_scatter_index) {
+  dev_ctx.template Alloc<T>(grad_x);
+  dev_ctx.template Alloc<T>(grad_combine_weights_helper);
+  dev_ctx.template Alloc<int32_t>(grad_scatter_index);
+
+  Full<T, Context>(dev_ctx, grad_x->dims(), 0, grad_x);
+  Full<T, Context>(dev_ctx,
+                   grad_combine_weights_helper->dims(),
+                   0,
+                   grad_combine_weights_helper);
+  Full<int32_t, Context>(
+      dev_ctx, grad_scatter_index->dims(), 0, grad_scatter_index);
+
+  // TODO(nieyuntao): Temporarily use 'grad_combine_weight_intermediate' to
+  // bypass the grad_combine_weights_helper's shape mismatch to kernel shape
+  // issue.
+  DenseTensor* grad_combine_weight_intermediate(grad_combine_weights_helper);
+  phi::MetaTensor grad_combine_weight_intermediate_meta(
+      grad_combine_weight_intermediate);
+  grad_combine_weight_intermediate_meta.set_dims(
+      common::make_ddim({grad_combine_weights_helper->dims()[0],
+                         grad_combine_weights_helper->dims()[1],
+                         x.dims()[1]}));
+  grad_combine_weight_intermediate_meta.set_dtype(combine_weights.dtype());
+  dev_ctx.template Alloc<T>(grad_combine_weight_intermediate);
+  Full<T, Context>(dev_ctx,
+                   grad_combine_weight_intermediate->dims(),
+                   0,
+                   grad_combine_weight_intermediate);
+
+  auto x_shape = x.dims();
+  auto combine_weights_shape = combine_weights.dims();
+  moe_combine_bwd<T, Context>(dev_ctx,
+                              x,
+                              combine_weights,
+                              scatter_index,
+                              grad_y,
+                              grad_x,
+                              grad_combine_weight_intermediate,
+                              combine_weights_shape[1],  // k
+                              combine_weights_shape[0],  // seqlen
+                              x_shape[1]);               // hidden_size
+
+  *grad_combine_weights_helper =
+      phi::Sum<T, Context>(dev_ctx,
+                           *grad_combine_weight_intermediate,
+                           {2},
+                           combine_weights.dtype(),
+                           false);
+}
 }  // namespace phi
 
 PD_REGISTER_KERNEL(moe_combine_grad,
@@ -172,5 +233,14 @@ PD_REGISTER_KERNEL(moe_combine_grad,
                    phi::MoeCombineGradKernel,
                    float,
                    double,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}
+
+PD_REGISTER_KERNEL(moe_combine_auto_grad,
+                   GPU,
+                   ALL_LAYOUT,
+                   phi::MoeCombineAutoGradKernel,
+                   float,
+                   double,
+                   phi::bfloat16,
+                   phi::float16) {}

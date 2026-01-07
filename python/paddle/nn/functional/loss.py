@@ -14,15 +14,14 @@
 
 from __future__ import annotations
 
-import functools
 import math
-import operator
 from typing import TYPE_CHECKING, Literal, overload
 
 import paddle
 from paddle import _C_ops, base, in_dynamic_mode
 from paddle.static.nn.control_flow import Assert
 from paddle.utils import deprecated
+from paddle.utils.decorator_utils import ParamAliasDecorator
 
 from ...base.data_feeder import check_type, check_variable_and_dtype
 from ...base.framework import (
@@ -96,9 +95,9 @@ def dice_loss(
     """
     assert input.dtype in (paddle.float32, paddle.float64)
     assert label.dtype in (paddle.int32, paddle.int64)
-    assert (
-        len(input.shape) >= 2
-    ), "The rank of input should be greater than or equal to 2."
+    assert len(input.shape) >= 2, (
+        "The rank of input should be greater than or equal to 2."
+    )
     assert len(input.shape) == len(label.shape), (
         "The rank of input and label should be equal, "
         f"but received input: {len(input.shape)}, label: {len(label.shape)}."
@@ -107,13 +106,9 @@ def dice_loss(
         "The last dimension of label should be 1, "
         f"but received {label.shape[-1]}."
     )
-    assert (
-        input.shape[:-1] == label.shape[:-1]
-    ), "All dimensions should be equal except the last one."
-    assert (
-        functools.reduce(operator.mul, input.shape) != 0
-        and functools.reduce(operator.mul, label.shape) != 0
-    ), "Any dimension of input and label cannot be equal to 0."
+    assert input.shape[:-1] == label.shape[:-1], (
+        "All dimensions should be equal except the last one."
+    )
 
     label = paddle.squeeze(label, [-1])
     label = paddle.nn.functional.one_hot(label, input.shape[-1])
@@ -300,7 +295,7 @@ def base_softmax_with_cross_entropy(
         # label = paddle.unsqueeze(label, axis)
         # ------
 
-        # notice : dim of label [-1,2,10] while logits is [-1,1] ,if use unsquezee
+        # notice : dim of label [-1,2,10] while logits is [-1,1], if use unsqueeze
         # logits [-1,1]->[-1,1,1], but input need 1 != 2 so change
         # the modified function make logits [-1,1] -> [-1,2] (uncertain)
         # another possible modify [-1,1] -> [-1,2,1]
@@ -499,6 +494,7 @@ def edit_distance(
     input_length: Tensor | None = None,
     label_length: Tensor | None = None,
 ) -> tuple[Tensor, Tensor]:
+    # typos: off
     """
     This op computes the edit distances, also called Levenshtein distance, between a batch of
     hypothesis strings and their references. It measures how dissimilar two strings are by counting
@@ -569,6 +565,7 @@ def edit_distance(
                      [0.25000000]])
 
     """
+    # typos: on
 
     helper = LayerHelper("edit_distance", **locals())
 
@@ -685,7 +682,7 @@ def binary_cross_entropy(
     if in_dynamic_or_pir_mode():
         out = _C_ops.bce_loss(input, label)
         if weight is not None:
-            out = _C_ops.multiply(out, weight, 'axis', -1)
+            out = _C_ops.multiply(out, weight)
 
         if reduction == 'sum':
             return _C_ops.sum(out, [], None, False)
@@ -848,24 +845,52 @@ def binary_cross_entropy_with_logits(
             logit.dtype,
             _current_expected_place(),
         )
+        if paddle.get_flags(["FLAGS_use_accuracy_compatible_kernel"]).get(
+            "FLAGS_use_accuracy_compatible_kernel", False
+        ):
+            log_sigmoid_input = paddle.nn.functional.log_sigmoid(logit)
+            if pos_weight is not None:
+                log_weight = _C_ops.add_(
+                    _C_ops.multiply(label, _C_ops.subtract(pos_weight, one)),
+                    one,
+                )
+                log_sigmoid_input = _C_ops.multiply_(
+                    log_sigmoid_input, log_weight
+                )
 
-        if pos_weight is not None:
-            pos_weight = _C_ops.add(
-                _C_ops.multiply(label, _C_ops.subtract(pos_weight, one)), one
+            loss = _C_ops.subtract_(
+                _C_ops.multiply_(_C_ops.subtract(one, label), logit),
+                log_sigmoid_input,
             )
-        out = _C_ops.sigmoid_cross_entropy_with_logits(
-            logit, label, pos_weight, False, -100
-        )
 
-        if weight is not None:
-            out = _C_ops.multiply(out, weight)
+            if weight is not None:
+                loss = _C_ops.multiply_(loss, weight)
 
-        if reduction == "sum":
-            return _C_ops.sum(out, [], None, False)
-        elif reduction == "mean":
-            return _C_ops.mean_all(out)
+            if reduction == "sum":
+                return _C_ops.sum(loss, [], None, False)
+            elif reduction == "mean":
+                return paddle.mean(loss, name=name)
+            else:
+                return loss
         else:
-            return out
+            if pos_weight is not None:
+                pos_weight = _C_ops.add(
+                    _C_ops.multiply(label, _C_ops.subtract(pos_weight, one)),
+                    one,
+                )
+            out = _C_ops.sigmoid_cross_entropy_with_logits(
+                logit, label, pos_weight, False, -100
+            )
+
+            if weight is not None:
+                out = _C_ops.multiply(out, weight)
+
+            if reduction == "sum":
+                return _C_ops.sum(out, [], None, False)
+            elif reduction == "mean":
+                return _C_ops.mean_all(out)
+            else:
+                return out
     else:
         check_variable_and_dtype(
             logit,
@@ -988,7 +1013,7 @@ def hsigmoid_loss(
         A tensor with the cost of hierarchical sigmoid, its shape is [N, 1] and data type is the same as `input`.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -999,26 +1024,26 @@ def hsigmoid_loss(
             >>> input = paddle.uniform([4, 3])
             >>> print(input)
             Tensor(shape=[4, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-                    [[ 0.73167229,  0.04029441, -0.48078126],
-                     [ 0.81050646, -0.15199822, -0.18717426],
-                     [ 0.94041789,  0.48874724,  0.03570259],
-                     [ 0.46585739,  0.95573163, -0.91368192]])
+                   [[0.86583614, 0.52014720, 0.25960937],
+                    [0.90525323, 0.42400089, 0.40641287],
+                    [0.97020894, 0.74437362, 0.51785129],
+                    [0.73292869, 0.97786582, 0.04315904]])
             >>> label = paddle.to_tensor([0, 1, 4, 5])
             >>> num_classes = 5
             >>> weight = paddle.uniform([num_classes - 1, 3])
             >>> print(weight)
             Tensor(shape=[4, 3], dtype=float32, place=Place(cpu), stop_gradient=True,
-                    [[-0.14721161,  0.43916738, -0.58377075],
-                     [-0.60536981, -0.23151302, -0.70793629],
-                     [-0.54572451, -0.10784978, -0.56684279],
-                     [ 0.35370791, -0.07079649,  0.84765708]])
+                   [[0.42639419, 0.71958369, 0.20811461],
+                    [0.19731510, 0.38424349, 0.14603184],
+                    [0.22713774, 0.44607511, 0.21657862],
+                    [0.67685395, 0.46460176, 0.92382854]])
             >>> out = F.hsigmoid_loss(input, label, num_classes, weight)
             >>> print(out)
             Tensor(shape=[4, 1], dtype=float32, place=Place(cpu), stop_gradient=True,
-                    [[2.23681736],
-                     [1.97140026],
-                     [1.66425037],
-                     [2.54727197]])
+                   [[2.37209344],
+                    [2.03524041],
+                    [2.56769133],
+                    [2.48895621]])
 
     """
     if num_classes < 2:
@@ -1733,7 +1758,7 @@ def kl_div(
         Tensor: The KL divergence loss. The data type is same as input tensor
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> import paddle
             >>> import paddle.nn.functional as F
@@ -1749,22 +1774,22 @@ def kl_div(
             >>> # 'batchmean' reduction, loss shape will be [], who is 0-D Tensor
             >>> pred_loss = F.kl_div(x, target, reduction='batchmean')
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'mean' reduction, loss shape will be [], who is 0-D Tensor
             >>> pred_loss = F.kl_div(x, target, reduction='mean')
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'sum' reduction, loss shape will be [], who is 0-D Tensor
             >>> pred_loss = F.kl_div(x, target, reduction='sum')
             >>> print(pred_loss.shape)
-            []
+            paddle.Size([])
 
             >>> # 'none' reduction, loss shape is same with input shape
             >>> pred_loss = F.kl_div(x, target, reduction='none')
             >>> print(pred_loss.shape)
-            [5, 20]
+            paddle.Size([5, 20])
 
             >>> # if label is in the log space, set log_target = True
             >>> target = paddle.uniform(shape, min=0, max=10).astype('float32')
@@ -1916,6 +1941,7 @@ def ctc_loss(
     blank: int = 0,
     reduction: _ReduceMode = 'mean',
     norm_by_times: bool = False,
+    zero_infinity: bool = False,
 ) -> Tensor:
     """
 
@@ -1932,6 +1958,7 @@ def ctc_loss(
         blank (int, optional): The blank label index of Connectionist Temporal Classification (CTC) loss, which is in the half-opened interval [0, num_classes + 1). The data type must be int32. Default: 0.
         reduction (str, optional): Indicate how to average the loss, the candidates are ``'none'`` | ``'mean'`` | ``'sum'``. If :attr:`reduction` is ``'mean'``, the output loss will be divided by the label_lengths, and then return the mean of quotient; If :attr:`reduction` is ``'sum'``, return the sum of loss; If :attr:`reduction` is ``'none'``, no reduction will be applied. Default: ``'mean'``.
         norm_by_times (bool, optional): Whether to normalize the gradients by the number of time-step, which is also the sequence's length. There is no need to normalize the gradients if reduction mode is 'mean'. Default: False.
+        zero_infinity (bool, optional): If True, set infinite loss to zero. Default: False.
 
     Returns:
         Tensor, The Connectionist Temporal Classification (CTC) loss between ``log_probs`` and  ``labels``. If attr:`reduction` is ``'none'``, the shape of loss is [batch_size], otherwise, the shape of loss is []. Data type is the same as ``log_probs``.
@@ -2046,8 +2073,17 @@ def ctc_loss(
     loss_out = warpctc(
         log_probs, labels, blank, norm_by_times, input_lengths, label_lengths
     )
-
     loss_out = paddle.squeeze(loss_out, [-1])
+
+    if zero_infinity:
+        inf_mask = paddle.isinf(loss_out)
+        zero_value = paddle.zeros_like(loss_out)
+        loss_out = paddle.where(
+            condition=inf_mask,
+            x=zero_value,
+            y=loss_out,
+        )
+
     assert reduction in ['mean', 'sum', 'none']
     if reduction == 'mean':
         loss_out = paddle.mean(loss_out / label_lengths.astype(loss_out.dtype))
@@ -2348,7 +2384,7 @@ def margin_cross_entropy(
             >>> num_class_per_card = [4, 8]
             >>> num_classes = paddle.sum(paddle.to_tensor(num_class_per_card))
 
-            >>> label = paddle.randint(low=0, high=num_classes.item(), shape=[batch_size], dtype='int64') # type: ignore
+            >>> label = paddle.randint(low=0, high=num_classes.item(), shape=[batch_size], dtype='int64')  # type: ignore[arg-type]
             >>> label_list: List[paddle.Tensor] = []
             >>> dist.all_gather(label_list, label)
             >>> label = paddle.concat(label_list, axis=0)
@@ -2451,6 +2487,10 @@ def margin_cross_entropy(
             )
             nranks = parallel_env.world_size if group is None else group.nranks
 
+    if logits.shape[-1] == 0:
+        raise ValueError(
+            f'Expected logit_dims[-1] > 0 (got logit_dims {logits.shape})'
+        )
     input_dims = len(list(logits.shape))
     label_dims = len(list(label.shape))
     if input_dims - 1 != label_dims and input_dims != label_dims:
@@ -2462,6 +2502,9 @@ def margin_cross_entropy(
         label = paddle.unsqueeze(label, axis=-1)
 
     if in_dynamic_or_pir_mode():
+        out_type = logits.dtype
+        if out_type == paddle.float16:
+            logits = paddle.cast(logits, paddle.float32)
         softmax, loss = _C_ops.margin_cross_entropy(
             logits,
             label,
@@ -2478,6 +2521,11 @@ def margin_cross_entropy(
             loss = paddle.mean(loss)
         elif reduction == 'sum':
             loss = paddle.sum(loss)
+
+        if out_type == paddle.float16:
+            softmax = paddle.cast(softmax, out_type)
+            loss = paddle.cast(loss, out_type)
+
         if not return_softmax:
             return loss
         else:
@@ -2674,6 +2722,7 @@ def softmax_with_cross_entropy(
     )
 
 
+@ParamAliasDecorator({"label": ["target"]})
 def cross_entropy(
     input: Tensor,
     label: Tensor,
@@ -2818,6 +2867,9 @@ def cross_entropy(
             3. If has label_smoothing, (i.e. label_smoothing > 0.0), no matter what ``soft_label`` is,
             the shape and data type of ``label`` could be either the situation 1 or situation 2.
             In other words, if label_smoothing > 0.0, the format of label could be one-hot label or integer label.
+
+            4. Alias Support: The parameter name ``label`` can be used as an alias for ``target``.
+            For example, ``cross_entropy(label=tensor)`` is equivalent to ``cross_entropy(target=tensor)``.
 
         weight (Tensor, optional): a manual rescaling weight given to each class.
             If given, has to be a Tensor of size C and the data type is float32, float64.
@@ -2977,8 +3029,8 @@ def cross_entropy(
 
     if input_dims - 1 != label_dims and input_dims != label_dims:
         raise ValueError(
-            f'Expected nput_dims - 1 = label_dims or input_dims == label_dims\
-             (got nput_dims{input_dims}, label_dims{label_dims})'
+            f'Expected input_dims - 1 = label_dims or input_dims == label_dims\
+             (got input_dims{input_dims}, label_dims{label_dims})'
         )
 
     if label_smoothing > 0.0:
@@ -3073,6 +3125,13 @@ def cross_entropy(
             #   so, reduce_sum all directly is ok
             return _C_ops.sum(out, [], None, False)
         elif reduction == "mean":
+            # when reduction is mean, use paddle.nan
+            def _replace_nan(out):
+                return out + paddle.nan
+
+            if 0 in input.shape:
+                out = _replace_nan(out)
+                return _C_ops.mean_all(out)
             # 1. if weight==none,
             #     numerator: reduce_sum all loss directly is ok causeof base_softmax_with_cross_entropy's inner logic
             #     denominator: count sample num with class_index!=ignore_index
@@ -3080,7 +3139,10 @@ def cross_entropy(
             #     numerator: loss's weighted sum
             #     denominator: cal the sum of weight where the sample's class_index!=ignore_index
             if ignore_index >= 0:  # ignore label
-                out_sum = _C_ops.sum(out, [], None, False)
+                if out.dtype == paddle.float16:
+                    out_sum = _C_ops.sum(out, [], paddle.float32, False)
+                else:
+                    out_sum = _C_ops.sum(out, [], None, False)
                 # for each label[i],set 1 or 0, according to ignore_index
                 # mask[i]=0, if label[i]==ignore_index
                 # mask[i]=1, otherwise
@@ -3099,7 +3161,10 @@ def cross_entropy(
                         weight_sum
                         + (weight_sum == 0.0).astype(weight_sum.dtype)
                     )
-                return ret
+                if out.dtype == paddle.float16:
+                    return paddle.cast(ret, dtype=out.dtype)
+                else:
+                    return ret
             elif weight is not None:
                 out_sum = _C_ops.sum(out, [], None, False)
                 total_weight = _C_ops.sum(
@@ -3463,7 +3528,7 @@ def multi_label_soft_margin_loss(
     Parameters:
         input (Tensor): Input tensor, the data type is float32 or float64. Shape is (N, C), where C is number of classes, and if shape is more than 2D, this is (N, C, D1, D2,..., Dk), k >= 1.
         label (Tensor): Label tensor, the data type is float32 or float64. The shape of label is the same as the shape of input.
-        weight (Tensor,optional): a manual rescaling weight given to each class.
+        weight (Tensor, optional): a manual rescaling weight given to each class.
                 If given, has to be a Tensor of size C and the data type is float32, float64.
                 Default is ``'None'`` .
         reduction (str, optional): Indicate how to average the loss by batch_size,
@@ -3478,7 +3543,7 @@ def multi_label_soft_margin_loss(
     Shape:
         input: N-D Tensor, the shape is [N, \*], N is batch size and `\*` means number of classes, available dtype is float32, float64. The sum operation operates over all the elements.
         label: N-D Tensor, same shape as the input.
-        weight:N-D Tensor, the shape is [N,1]
+        weight: N-D Tensor, the shape is [N,1]
         output: scalar. If :attr:`reduction` is ``'none'``, then same shape as the input.
 
     Returns:
@@ -3519,13 +3584,13 @@ def multi_label_soft_margin_loss(
             input,
             'input',
             ['float32', 'float64'],
-            'multilabel_soft_margin_loss',
+            'multi_label_soft_margin_loss',
         )
         check_variable_and_dtype(
             label,
             'label',
             ['float32', 'float64'],
-            'multilabel_soft_margin_loss',
+            'multi_label_soft_margin_loss',
         )
 
     loss = -(
@@ -3539,7 +3604,7 @@ def multi_label_soft_margin_loss(
                 weight,
                 'weight',
                 ['float32', 'float64'],
-                'multilabel_soft_margin_loss',
+                'multi_label_soft_margin_loss',
             )
         loss = loss * weight
 
@@ -3898,9 +3963,7 @@ def triplet_margin_with_distance_loss(
 
     if not (input.shape == positive.shape == negative.shape):
         raise ValueError(
-            "input's shape must equal to "
-            "positive's shape and  "
-            "negative's shape"
+            "input's shape must equal to positive's shape and negative's shape"
         )
 
     distance_function = (
@@ -3918,10 +3981,10 @@ def triplet_margin_with_distance_loss(
 
     if (
         not isinstance(positive_dist, paddle.pir.Value)
-        and not paddle.all(positive_dist > 0)
+        and not paddle.all(positive_dist >= 0)
     ) or (
         not isinstance(negative_dist, paddle.pir.Value)
-        and not paddle.all(negative_dist > 0)
+        and not paddle.all(negative_dist >= 0)
     ):
         raise ValueError(
             "The positive distance or negative distance should be greater than 0, "
@@ -4045,9 +4108,7 @@ def triplet_margin_loss(
 
     if not (input.shape == positive.shape == negative.shape):
         raise ValueError(
-            "input's shape must equal to "
-            "positive's shape and  "
-            "negative's shape"
+            "input's shape must equal to positive's shape and negative's shape"
         )
 
     distance_function = paddle.nn.PairwiseDistance(p, epsilon=epsilon)
@@ -4169,14 +4230,17 @@ def multi_margin_loss(
                 f"but received weight's shape[0]: {weight.shape[0]} and input's shape[1]: {input.shape[1]}"
             )
         weight = paddle.gather(weight, label, axis=0).reshape((-1, 1))
-        loss = paddle.mean(
-            weight
-            * paddle.pow(
-                paddle.clip((margin - index_sample + input), min=0.0),
-                p,
-            ),
-            axis=1,
-        ) - weight * (margin**p / paddle.shape(input)[1])
+        loss = (
+            paddle.mean(
+                weight
+                * paddle.pow(
+                    paddle.clip((margin - index_sample + input), min=0.0),
+                    p,
+                ),
+                axis=1,
+            )
+            - (weight * (margin**p / paddle.shape(input)[1])).squeeze()
+        )
     else:
         loss = (
             paddle.mean(
@@ -4194,6 +4258,125 @@ def multi_margin_loss(
         return paddle.sum(loss, name=name)
     elif reduction == 'none':
         return loss
+
+
+def multi_label_margin_loss(
+    input: Tensor,
+    label: Tensor,
+    reduction: _ReduceMode = 'mean',
+    name: str | None = None,
+) -> Tensor:
+    r"""Measures a multi-class multi-classification hinge loss (margin-based loss) between input :math:`input` and label :math:`label`:
+
+    For i-th mini-batch sample, the loss in terms of the 2D input :math:`input_i` and 2D label :math:`label_i` is:
+
+    .. math::
+        \text{loss}(input_i, label_i) = \frac{\sum_{j \in \text{valid_labels}} \sum_{k \neq \text{valid_labels}} \max(0, 1 - (input_i[\text{valid_labels}[j]] - input_i[k]))}{C}
+
+    where :math:`C` is the number of classes, :math:`\text{valid_labels}` contains all non-negative label indices
+    for sample :math:`i` (stopping at the first -1 encountered), and :math:`k` ranges over all class indices
+    except those in :math:`\text{valid_labels}`.
+
+    The criterion only considers the first non-negative label values, allowing different samples to have variable numbers of target classes.
+
+    Parameters:
+        input (Tensor): Input tensor, the data type is float32 or float64. Shape is (N, C), where C is number of classes.
+        label (Tensor): Label tensor, the data type is int32 or int64. Shape is (N, C), same shape as input.
+            Label values should be class indices (non-negative values) and -1 values.
+            The -1 values are ignored and stop processing for each sample.
+        reduction (str, optional): Indicate how to calculate the loss by batch_size,
+            the candidates are ``'none'`` | ``'mean'`` | ``'sum'``.
+            If :attr:`reduction` is ``'none'``, the unreduced loss is returned;
+            If :attr:`reduction` is ``'mean'``, the reduced mean loss is returned;
+            If :attr:`reduction` is ``'sum'``, the summed loss is returned.
+            Default: ``'mean'``
+        name (str|None, optional): Name for the operation (optional, default is None).
+            For more information, please refer to :ref:`api_guide_Name`.
+
+    Returns:
+        Tensor, The tensor variable storing the multi_label_margin_loss of input and label.
+
+    Examples:
+        .. code-block:: python
+
+            >>> import paddle
+            >>> import paddle.nn.functional as F
+
+            >>> input = paddle.to_tensor([[0.1, 0.2, 0.4, 0.8], [0.2, 0.5, 0.3, 0.1]], dtype='float32')
+            >>> label = paddle.to_tensor([[3, 0, -1, -1], [0, 2, -1, -1]], dtype='int64')
+
+            >>> loss = F.multi_label_margin_loss(input, label, reduction='mean')
+            >>> print(loss)
+            Tensor(shape=[], dtype=float32, place=Place(cpu), stop_gradient=True,
+                   0.94999999)
+    """
+    if reduction not in ['sum', 'mean', 'none']:
+        raise ValueError(
+            "'reduction' in 'multi_label_margin_loss' should be 'sum', 'mean' or 'none', "
+            f"but received {reduction}."
+        )
+
+    if not in_dynamic_mode():
+        check_variable_and_dtype(
+            input, 'input', ['float32', 'float64'], 'multi_label_margin_loss'
+        )
+        check_variable_and_dtype(
+            label, 'label', ['int32', 'int64'], 'multi_label_margin_loss'
+        )
+
+    if input.dim() != 2:
+        raise ValueError(f'Expected 2D input tensor, but got {input.dim()}D')
+
+    if label.dim() != 2:
+        raise ValueError(f'Expected 2D label tensor, but got {label.dim()}D')
+
+    N, C = input.shape
+
+    if paddle.in_dynamic_mode() and label.numel() > 0:
+        min_val = paddle.min(label).item()
+        max_val = paddle.max(label).item()
+
+        if min_val < -1:
+            raise ValueError("label values should be >= -1")
+        if max_val >= C:
+            raise ValueError(f"label values should be < {C}")
+
+    # calculate valid_mask
+    valid_mask = (label != -1).cast('int32')
+    valid_mask = valid_mask * valid_mask.cumprod(dim=1)
+
+    row_ids, col_ids = paddle.where(valid_mask)
+    targets_flat = label[row_ids, col_ids]
+
+    invalid_mask = paddle.ones([N, C], dtype='bool')
+    invalid_mask[row_ids, targets_flat] = False
+
+    # calculate margin by broadcasting
+    input_target = input[row_ids, targets_flat].unsqueeze(-1)
+    margin = 1 - input_target + input[row_ids]
+    margin = paddle.where(
+        invalid_mask[row_ids], margin, paddle.zeros_like(margin)
+    )
+
+    relu_margin = paddle.maximum(margin, paddle.zeros_like(margin))
+
+    losses = paddle.scatter_nd_add(
+        paddle.zeros([N], dtype=input.dtype),
+        row_ids.unsqueeze(-1),
+        relu_margin.sum(
+            axis=1,
+        ),
+    )
+
+    # average by number of valid labels
+    losses /= C
+
+    if reduction == 'mean':
+        return paddle.mean(losses, name=name)
+    elif reduction == 'sum':
+        return paddle.sum(losses, name=name)
+    elif reduction == 'none':
+        return losses
 
 
 def soft_margin_loss(
@@ -4279,7 +4462,7 @@ def soft_margin_loss(
         )
 
     if not (input.shape == label.shape):
-        raise ValueError("input's shape must equal to " "label's shape")
+        raise ValueError("input's shape must equal to label's shape")
 
     label = paddle.cast(label, input.dtype)
     out = paddle.log(1 + paddle.exp(-label * input))
@@ -4519,7 +4702,7 @@ def adaptive_log_softmax_with_loss(
     target_dim = label.dim()
 
     if target_dim == 1:
-        if input.shape[0] != label.shape[0]:
+        if input.shape[0] != label.shape[0] and label.shape[0] != 0:
             raise ValueError(
                 'Input and label should have the same size '
                 'in the batch dimension.'
@@ -4537,7 +4720,7 @@ def adaptive_log_softmax_with_loss(
             )
     else:
         raise ValueError(
-            '0D or 1D label tensor expected, ' 'multi-label not supported'
+            '0D or 1D label tensor expected, multi-label not supported'
         )
 
     is_batched = target_dim > 0
@@ -4616,9 +4799,10 @@ def adaptive_log_softmax_with_loss(
         x=input, weight=head_weight, bias=head_bias
     )
     head_logprob = paddle.nn.functional.log_softmax(head_output, axis=1)
-    output += paddle.take_along_axis(
-        head_logprob, gather_inds.unsqueeze(1), axis=1
-    ).squeeze()
+    if gather_inds.size != 0:
+        output += paddle.take_along_axis(
+            head_logprob, gather_inds.unsqueeze(1), axis=1
+        ).squeeze()
     loss = (-output).mean()
 
     if not is_batched:

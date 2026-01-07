@@ -19,7 +19,6 @@
 #include "paddle/common/ddim.h"
 #include "paddle/phi/backends/dynload/cusparse.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/core/dense_tensor.h"
 #include "paddle/phi/core/enforce.h"
@@ -40,7 +39,7 @@ cudaDataType_t GetGpuDataType() {
     return CUDA_R_32F;
   } else if (std::is_same<T, double>::value) {
     return CUDA_R_64F;
-  } else if (std::is_same<T, phi::dtype::float16>::value) {
+  } else if (std::is_same<T, phi::float16>::value) {
     return CUDA_R_16F;
   }
 }
@@ -224,7 +223,7 @@ class CuSparseSpMatDescriptor {
 template <typename T>
 class CuSparseDnMatDescriptor {
  public:
-  explicit CuSparseDnMatDescriptor(const phi::DenseTensor& x,
+  explicit CuSparseDnMatDescriptor(const DenseTensor& x,
                                    const phi::GPUContext& dev_ctx)
       : dev_ctx_(dev_ctx) {
     std::vector<int64_t> xdim_vec = common::vectorize(x.dims());
@@ -288,7 +287,7 @@ class CuSparseDnMatDescriptor {
 template <typename T>
 class CuSparseDnVecDescriptor {
  public:
-  explicit CuSparseDnVecDescriptor(const phi::DenseTensor& x,
+  explicit CuSparseDnVecDescriptor(const DenseTensor& x,
                                    const phi::GPUContext& dev_ctx)
       : dev_ctx_(dev_ctx) {
     std::vector<int64_t> xdim_vec = common::vectorize(x.dims());
@@ -329,9 +328,9 @@ void SparseBlas<phi::GPUContext>::SPMM(bool transa,
                                        bool transb,
                                        T alpha,
                                        const TensorType& mat_a,
-                                       const phi::DenseTensor& mat_b,
+                                       const DenseTensor& mat_b,
                                        T beta,
-                                       phi::DenseTensor* mat_out) const {
+                                       DenseTensor* mat_out) const {
   auto a_descriptor = CuSparseSpMatDescriptor<T>(mat_a, dev_ctx_);
   auto b_descriptor = CuSparseDnMatDescriptor<T>(mat_b, dev_ctx_);
   auto out_descriptor = CuSparseDnMatDescriptor<T>(*mat_out, dev_ctx_);
@@ -378,9 +377,9 @@ template <typename T, typename TensorType>
 void SparseBlas<phi::GPUContext>::SPMV(bool transa,
                                        T alpha,
                                        const TensorType& mat_a,
-                                       const phi::DenseTensor& vec_x,
+                                       const DenseTensor& vec_x,
                                        T beta,
-                                       phi::DenseTensor* vec_out) const {
+                                       DenseTensor* vec_out) const {
   auto a_descriptor = CuSparseSpMatDescriptor<T>(mat_a, dev_ctx_);
   auto x_descriptor = CuSparseDnVecDescriptor<T>(vec_x, dev_ctx_);
   auto out_descriptor = CuSparseDnVecDescriptor<T>(*vec_out, dev_ctx_);
@@ -434,8 +433,8 @@ template <typename T, typename TensorType>
 void SparseBlas<phi::GPUContext>::SDDMM(bool transa,
                                         bool transb,
                                         T alpha,
-                                        const phi::DenseTensor& mat_a,
-                                        const phi::DenseTensor& mat_b,
+                                        const DenseTensor& mat_a,
+                                        const DenseTensor& mat_b,
                                         T beta,
                                         TensorType* mat_out) const {
   auto a_descriptor = CuSparseDnMatDescriptor<T>(mat_a, dev_ctx_);

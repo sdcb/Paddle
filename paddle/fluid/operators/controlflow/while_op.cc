@@ -12,17 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/common/flags.h"
 #include "paddle/fluid/framework/executor.h"
 #include "paddle/fluid/framework/new_executor/standalone_executor.h"
 #include "paddle/fluid/framework/op_registry.h"
 #include "paddle/fluid/framework/operator.h"
 #include "paddle/fluid/operators/controlflow/control_flow_op_helper.h"
 #include "paddle/fluid/operators/controlflow/while_op_helper.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
-#include "paddle/common/flags.h"
 
 COMMON_DECLARE_bool(cache_inference_while_scope);
 
@@ -82,7 +79,7 @@ class WhileOp : public framework::OperatorBase {
     // Executor on being destroyed clears oneDNN cache and resets
     // registered model data layout. This is unwanted for nested
     // Executors (executors declared inside control ops)
-    platform::DontClearMKLDNNCache(dev_place);
+    platform::DontClearONEDNNCache(dev_place);
 #endif
     auto *block = Attr<framework::BlockDesc *>(kStepBlock);
 

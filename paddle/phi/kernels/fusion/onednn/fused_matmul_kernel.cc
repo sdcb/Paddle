@@ -110,7 +110,7 @@ class FusedMatmulOneDNNHandler
     // TODO(jczaja): Why not for int8??
     if (!funcs::is_int8<OT>() && is_output_fused) {
       std::vector<int> transpose_axis = {0, 2, 1, 3};
-      out_strides = phi::funcs::FakeTransposeStrides(out_ddims, transpose_axis);
+      out_strides = funcs::FakeTransposeStrides(out_ddims, transpose_axis);
     }
 
     auto x_md = memory::desc(x_dims, funcs::OneDNNGetDataType<XT>(), x_strides);
@@ -221,7 +221,7 @@ class FusedMatmulOneDNNHandler
       const DenseTensor *input) {
     const XT *input_data = input->data<XT>();
     auto residual_memory_p = this->AcquireMemoryFromPrimitive(
-        input->mem_desc(), phi::funcs::to_void_cast<XT>(input_data));
+        input->mem_desc(), funcs::to_void_cast<XT>(input_data));
     return residual_memory_p;
   }
 
@@ -525,29 +525,29 @@ void FusedMatmulKernel(const Context &dev_ctx,
                                  force_fp32_output,
                                  out);
   } else if (is_bfloat16) {
-    ExecuteFusedMatmul<T, phi::dtype::bfloat16>(dev_ctx,
-                                                x,
-                                                y,
-                                                residual_data.get_ptr(),
-                                                x_bd_dims,
-                                                y_bd_dims,
-                                                transpose_x,
-                                                transpose_y,
-                                                matmul_alpha,
-                                                x_strides_override,
-                                                y_strides_override,
-                                                is_output_fused,
-                                                fused_transpose_Out,
-                                                fuse_activation,
-                                                fuse_alpha,
-                                                fuse_beta,
-                                                fused_output_scale,
-                                                scale_x,
-                                                scale_y,
-                                                scale_in_eltwise,
-                                                scale_out,
-                                                force_fp32_output,
-                                                out);
+    ExecuteFusedMatmul<T, phi::bfloat16>(dev_ctx,
+                                         x,
+                                         y,
+                                         residual_data.get_ptr(),
+                                         x_bd_dims,
+                                         y_bd_dims,
+                                         transpose_x,
+                                         transpose_y,
+                                         matmul_alpha,
+                                         x_strides_override,
+                                         y_strides_override,
+                                         is_output_fused,
+                                         fused_transpose_Out,
+                                         fuse_activation,
+                                         fuse_alpha,
+                                         fuse_beta,
+                                         fused_output_scale,
+                                         scale_x,
+                                         scale_y,
+                                         scale_in_eltwise,
+                                         scale_out,
+                                         force_fp32_output,
+                                         out);
   } else if (fuse_relu) {
     ExecuteFusedMatmul<T, uint8_t>(dev_ctx,
                                    x,
@@ -607,7 +607,7 @@ PD_REGISTER_KERNEL(fused_matmul,
                    ONEDNN,
                    phi::fusion::FusedMatmulKernel,
                    float,
-                   phi::dtype::bfloat16,
+                   phi::bfloat16,
                    int8_t,
                    uint8_t) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);

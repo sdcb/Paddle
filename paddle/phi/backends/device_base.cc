@@ -37,7 +37,7 @@ size_t DeviceInterface::GetComputeCapability(size_t dev_id) {
 }
 
 DeviceProp& DeviceInterface::GetDeviceProperties(size_t dev_id) {
-  DeviceProp prop;
+  static DeviceProp prop;
   VLOG(10) << Type() << " get device properties " << 0;
   return prop;
 }
@@ -71,6 +71,21 @@ std::array<unsigned int, 3> DeviceInterface::GetMaxGridDimSize(size_t dev_id) {
   VLOG(10) << Type() << " get max grid dim size [" << 0 << ", " << 0 << ", "
            << 0 << "]";
   return {0, 0, 0};
+}
+
+bool DeviceInterface::IsFloat16Supported(size_t dev_id) {
+  VLOG(10) << Type() << " is float16 supported: " << false;
+  return false;
+}
+
+bool DeviceInterface::IsBFloat16Supported(size_t dev_id) {
+  VLOG(10) << Type() << " is bfloat16 supported: " << false;
+  return false;
+}
+
+bool DeviceInterface::IsDnnAvailable(size_t dev_id) {
+  VLOG(10) << Type() << " is dnn available: " << false;
+  return false;
 }
 
 void* DeviceInterface::InitEigenDevice(const Place& place,
@@ -448,6 +463,99 @@ void DeviceInterface::ProfilerStopTracing(phi::TraceEventCollector* collector,
 
 void DeviceInterface::ProfilerCollectTraceData(
     phi::TraceEventCollector* collector, uint64_t start_ns, void* user_data) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::InitBlasHandle(size_t dev_id,
+                                     void** blas_handle,
+                                     phi::stream::stream_t stream) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::BlasSetMathMode(size_t dev_id,
+                                      void* blas_handle,
+                                      int math_mode) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::InitBlasLtHandle(size_t dev_id, void** blaslt_handle) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::DestroyBlasHandle(size_t dev_id, void* blas_handle) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::DestroyBlasLtHandle(size_t dev_id, void* blaslt_handle) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+// CudaGraph
+void DeviceInterface::CUDAStreamBeginCapture(size_t dev_id,
+                                             stream::stream_t stream,
+                                             graph::streamCaptureMode mode) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaStreamEndCapture(size_t dev_id,
+                                           stream::stream_t stream,
+                                           graph::CUDAGraph_t* pGraph) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphLaunch(size_t dev_id,
+                                      graph::CUDAGraphExec_t exec,
+                                      stream::stream_t stream) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphDestroy(graph::CUDAGraph_t graph) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphExecDestroy(graph::CUDAGraphExec_t graphExec) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphInstantiate(graph::CUDAGraphExec_t* pGraphExec,
+                                           graph::CUDAGraph_t* pGraph,
+                                           void** pErrorNode,
+                                           char* pLogBuffer,
+                                           size_t bufferSize) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphGetNodes(graph::CUDAGraph_t graph,
+                                        graph::CUDAGraphNode_t* pNodes,
+                                        size_t* numNodes) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaStreamGetCaptureInfo(
+    size_t dev_id,
+    stream::stream_t stream,
+    graph::streamCaptureStatus* captureStatus_out,
+    unsigned long long* id_out,  // NOLINT
+    graph::CUDAGraph_t* graph_out,
+    graph::CUDAGraphNode_t* dependencies_out,
+    void** edgeData_out,
+    size_t* numDependencies_out) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::GetParameterSetterForExecGraph(
+    graph::CUDAGraph_t graph, graph::GraphHookManager* hook) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaGraphDebugDotPrint(graph::CUDAGraph_t graph,
+                                             const char* path,
+                                             unsigned flags) {
+  INTERFACE_UNIMPLEMENT;
+}
+
+void DeviceInterface::CudaThreadExchangeStreamCaptureMode(
+    graph::streamCaptureMode* mode) {
   INTERFACE_UNIMPLEMENT;
 }
 

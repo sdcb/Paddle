@@ -159,7 +159,7 @@ struct LayerNormDataWriter {
           temp_dst[j] = static_cast<T>((buffer[i * VecSize + j] - row_mean) *
                                        row_inv_var);
         }
-        v_dst[threadIdx.x + blockDim.x * i] = temp_dst;
+        v_dst[threadIdx.x + static_cast<int64_t>(blockDim.x) * i] = temp_dst;
       }
     } else {
       const VecScaleT *__restrict__ v_scale =
@@ -168,7 +168,7 @@ struct LayerNormDataWriter {
           reinterpret_cast<const VecScaleT *__restrict__>(bias);
       if (valid_scale && valid_bias) {
         for (int i = 0; i < write_times; ++i) {
-          int idx = threadIdx.x + blockDim.x * i;
+          int64_t idx = threadIdx.x + static_cast<int64_t>(blockDim.x) * i;
           VecT temp_dst;
           VecScaleT temp_v_scale = v_scale[idx];
           VecScaleT temp_v_bias = v_bias[idx];
@@ -184,7 +184,7 @@ struct LayerNormDataWriter {
       } else {
         if (valid_scale) {
           for (int i = 0; i < write_times; ++i) {
-            int idx = threadIdx.x + blockDim.x * i;
+            int64_t idx = threadIdx.x + static_cast<int64_t>(blockDim.x) * i;
             VecT temp_dst;
             VecScaleT temp_v_scale = v_scale[idx];
 #pragma unroll
@@ -232,19 +232,19 @@ struct LayerNormDataWriter<T, U, IsSameType, 1> {
     if ((!valid_scale) && (!valid_bias)) {
       if (threadIdx.x < last_tid_idx) {
         for (int i = 0; i < cols_this_thread; ++i) {
-          row_dst[threadIdx.x + last_tid_idx * i] =
+          row_dst[threadIdx.x + static_cast<int64_t>(last_tid_idx) * i] =
               (buffer[i] - row_mean) * row_inv_var;
         }
       } else {
         for (int i = 0; i < cols_this_thread; ++i) {
-          row_dst[last_tid_idx * write_times + i] =
+          row_dst[static_cast<int64_t>(last_tid_idx) * write_times + i] =
               (buffer[i] - row_mean) * row_inv_var;
         }
       }
     } else if (valid_scale && valid_bias) {
       if (threadIdx.x < last_tid_idx) {
         for (int i = 0; i < cols_this_thread; ++i) {
-          int idx = threadIdx.x + last_tid_idx * i;
+          int64_t idx = threadIdx.x + static_cast<int64_t>(last_tid_idx) * i;
           row_dst[idx] =
               static_cast<T>(static_cast<U>(scale[idx]) *
                                  (buffer[i] - row_mean) * row_inv_var +
@@ -252,7 +252,7 @@ struct LayerNormDataWriter<T, U, IsSameType, 1> {
         }
       } else {
         for (int i = 0; i < cols_this_thread; ++i) {
-          int idx = last_tid_idx * write_times + i;
+          int64_t idx = static_cast<int64_t>(last_tid_idx) * write_times + i;
           row_dst[idx] =
               static_cast<T>(static_cast<U>(scale[idx]) *
                                  (buffer[i] - row_mean) * row_inv_var +
@@ -263,13 +263,13 @@ struct LayerNormDataWriter<T, U, IsSameType, 1> {
       if (valid_scale) {
         if (threadIdx.x < last_tid_idx) {
           for (int i = 0; i < cols_this_thread; ++i) {
-            int idx = threadIdx.x + last_tid_idx * i;
+            int64_t idx = threadIdx.x + static_cast<int64_t>(last_tid_idx) * i;
             row_dst[idx] = static_cast<T>(static_cast<U>(scale[idx]) *
                                           (buffer[i] - row_mean) * row_inv_var);
           }
         } else {
           for (int i = 0; i < cols_this_thread; ++i) {
-            int idx = last_tid_idx * write_times + i;
+            int64_t idx = static_cast<int64_t>(last_tid_idx) * write_times + i;
             row_dst[idx] = static_cast<T>(static_cast<U>(scale[idx]) *
                                           (buffer[i] - row_mean) * row_inv_var);
           }
@@ -277,13 +277,13 @@ struct LayerNormDataWriter<T, U, IsSameType, 1> {
       } else {
         if (threadIdx.x < last_tid_idx) {
           for (int i = 0; i < cols_this_thread; ++i) {
-            int idx = threadIdx.x + last_tid_idx * i;
+            int64_t idx = threadIdx.x + static_cast<int64_t>(last_tid_idx) * i;
             row_dst[idx] = static_cast<T>((buffer[i] - row_mean) * row_inv_var +
                                           static_cast<U>(bias[idx]));
           }
         } else {
           for (int i = 0; i < cols_this_thread; ++i) {
-            int idx = last_tid_idx * write_times + i;
+            int64_t idx = static_cast<int64_t>(last_tid_idx) * write_times + i;
             row_dst[idx] = static_cast<T>((buffer[i] - row_mean) * row_inv_var +
                                           static_cast<U>(bias[idx]));
           }
@@ -470,9 +470,9 @@ void LayerNormDirectCUDAFunctor<T, U>::operator()(
   auto matrix_dim = common::flatten_to_2d(x_dims, begin_norm_axis);
   int64_t batch_size = static_cast<int64_t>(matrix_dim[0]);
   int64_t feature_size = static_cast<int64_t>(matrix_dim[1]);
-  switch (phi::funcs::GetDesiredBlockDim(feature_size)) {
+  switch (funcs::GetDesiredBlockDim(feature_size)) {
     FIXED_BLOCK_DIM_CASE(
-        phi::funcs::LayerNormForward<T, U, kBlockDim>
+        funcs::LayerNormForward<T, U, kBlockDim>
         <<<batch_size, kBlockDim, 0, stream>>>(
             input, scale, bias, output, mean, variance, eps, feature_size));
     default:
@@ -483,10 +483,10 @@ void LayerNormDirectCUDAFunctor<T, U>::operator()(
   }
 }
 
-template class LayerNormDirectCUDAFunctor<float, float>;
-template class LayerNormDirectCUDAFunctor<double, double>;
+template class PADDLE_API LayerNormDirectCUDAFunctor<float, float>;
+template class PADDLE_API LayerNormDirectCUDAFunctor<double, double>;
 #if defined(PADDLE_WITH_CUDA) && !defined(PADDLE_WITH_HIP)
-template class LayerNormDirectCUDAFunctor<half, float>;
+template class PADDLE_API LayerNormDirectCUDAFunctor<half, float>;
 #endif
 
 template <typename T, typename Context>
@@ -499,7 +499,7 @@ void LayerNormKernel(const Context &dev_ctx,
                      DenseTensor *y,
                      DenseTensor *mean,
                      DenseTensor *var) {
-  using U = phi::funcs::LayerNormParamType<T>;
+  using U = funcs::LayerNormParamType<T>;
   auto *scale = scale_opt.get_ptr();
   auto *bias = bias_opt.get_ptr();
 
@@ -508,6 +508,7 @@ void LayerNormKernel(const Context &dev_ctx,
   auto *y_data = dev_ctx.template Alloc<T>(y);
   auto *mean_data = dev_ctx.template Alloc<U>(mean);
   auto *var_data = dev_ctx.template Alloc<U>(var);
+  if (x.numel() == 0) return;
 
   bool valid_scale = (scale != nullptr);
   bool valid_bias = (bias != nullptr);
@@ -542,26 +543,25 @@ void LayerNormKernel(const Context &dev_ctx,
   int64_t feature_size = static_cast<int64_t>(matrix_dim[1]);
   auto stream = dev_ctx.stream();
 
-#define PADDLE_LAUNCH_LAYERNORM_FWD(ScaleBiasT, IsScaleBiasSameDTypeWithX) \
-  do {                                                                     \
-    switch (phi::funcs::GetDesiredBlockDim(feature_size)) {                \
-      FIXED_BLOCK_DIM_CASE(                                                \
-          phi::funcs::                                                     \
-              LayerNormForward<T, U, kBlockDim, IsScaleBiasSameDTypeWithX> \
-          <<<batch_size, kBlockDim, 0, stream>>>(                          \
-              x_data,                                                      \
-              static_cast<const ScaleBiasT *>(void_scale_data),            \
-              static_cast<const ScaleBiasT *>(void_bias_data),             \
-              y_data,                                                      \
-              mean_data,                                                   \
-              var_data,                                                    \
-              epsilon,                                                     \
-              feature_size));                                              \
-      default:                                                             \
-        PADDLE_THROW(common::errors::InvalidArgument(                      \
-            "Product from begin_norm_axis to end must be larger than 1")); \
-        break;                                                             \
-    }                                                                      \
+#define PADDLE_LAUNCH_LAYERNORM_FWD(ScaleBiasT, IsScaleBiasSameDTypeWithX)    \
+  do {                                                                        \
+    switch (funcs::GetDesiredBlockDim(feature_size)) {                        \
+      FIXED_BLOCK_DIM_CASE(                                                   \
+          funcs::LayerNormForward<T, U, kBlockDim, IsScaleBiasSameDTypeWithX> \
+          <<<batch_size, kBlockDim, 0, stream>>>(                             \
+              x_data,                                                         \
+              static_cast<const ScaleBiasT *>(void_scale_data),               \
+              static_cast<const ScaleBiasT *>(void_bias_data),                \
+              y_data,                                                         \
+              mean_data,                                                      \
+              var_data,                                                       \
+              epsilon,                                                        \
+              feature_size));                                                 \
+      default:                                                                \
+        PADDLE_THROW(common::errors::InvalidArgument(                         \
+            "Product from begin_norm_axis to end must be larger than 1"));    \
+        break;                                                                \
+    }                                                                         \
   } while (0)
 
 #define PADDLE_LAUNCH_FAST_LAYERNORM_FWD_BASE(ScaleT, feature_size)          \
@@ -575,14 +575,14 @@ void LayerNormKernel(const Context &dev_ctx,
     const int ROWS_PER_CTA = WARPS_M;                                        \
     const int grid = static_cast<int>(                                       \
         std::ceil(batch_size / static_cast<float>(ROWS_PER_CTA)));           \
-    phi::funcs::fast_ln_fwd_kernel<T,                                        \
-                                   U,                                        \
-                                   ScaleT,                                   \
-                                   VecSize,                                  \
-                                   WARPS_M,                                  \
-                                   WARPS_N,                                  \
-                                   BYTES_PER_LDG,                            \
-                                   feature_size>                             \
+    funcs::fast_ln_fwd_kernel<T,                                             \
+                              U,                                             \
+                              ScaleT,                                        \
+                              VecSize,                                       \
+                              WARPS_M,                                       \
+                              WARPS_N,                                       \
+                              BYTES_PER_LDG,                                 \
+                              feature_size>                                  \
         <<<grid, THREADS_PER_CTA, 0, stream>>>(                              \
             batch_size,                                                      \
             feature_size,                                                    \
@@ -666,17 +666,44 @@ void LayerNormKernel(const Context &dev_ctx,
 #undef PADDLE_LAUNCH_LAYERNORM_FWD
 #undef PADDLE_LAUNCH_FAST_LAYERNORM_FWD
 }
-
+#ifdef _WIN32
+template PADDLE_API void LayerNormKernel<float, GPUContext>(
+    const GPUContext &dev_ctx,
+    const DenseTensor &x,
+    const paddle::optional<DenseTensor> &scale_opt,
+    const paddle::optional<DenseTensor> &bias_opt,
+    float epsilon,
+    int begin_norm_axis,
+    DenseTensor *y,
+    DenseTensor *mean,
+    DenseTensor *var);
+template PADDLE_API void LayerNormKernel<phi::dtype::float16, GPUContext>(
+    const GPUContext &dev_ctx,
+    const DenseTensor &x,
+    const paddle::optional<DenseTensor> &scale_opt,
+    const paddle::optional<DenseTensor> &bias_opt,
+    float epsilon,
+    int begin_norm_axis,
+    DenseTensor *y,
+    DenseTensor *mean,
+    DenseTensor *var);
+template PADDLE_API void LayerNormKernel<double, GPUContext>(
+    const GPUContext &dev_ctx,
+    const DenseTensor &x,
+    const paddle::optional<DenseTensor> &scale_opt,
+    const paddle::optional<DenseTensor> &bias_opt,
+    float epsilon,
+    int begin_norm_axis,
+    DenseTensor *y,
+    DenseTensor *mean,
+    DenseTensor *var);
+#endif
 }  // namespace phi
 
 #ifdef PADDLE_WITH_HIP
 // MIOPEN do not support double
-PD_REGISTER_KERNEL(layer_norm,
-                   GPU,
-                   ALL_LAYOUT,
-                   phi::LayerNormKernel,
-                   float,
-                   phi::dtype::float16) {
+PD_REGISTER_KERNEL(
+    layer_norm, GPU, ALL_LAYOUT, phi::LayerNormKernel, float, phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::UNDEFINED);
   kernel->OutputAt(2).SetDataType(phi::DataType::UNDEFINED);
 }
@@ -687,8 +714,8 @@ PD_REGISTER_KERNEL(layer_norm,
                    phi::LayerNormKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {
+                   phi::float16,
+                   phi::bfloat16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::UNDEFINED);
   kernel->OutputAt(2).SetDataType(phi::DataType::UNDEFINED);
 }
@@ -699,7 +726,7 @@ PD_REGISTER_KERNEL(layer_norm,
                    phi::LayerNormKernel,
                    float,
                    double,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::UNDEFINED);
   kernel->OutputAt(2).SetDataType(phi::DataType::UNDEFINED);
 }

@@ -32,7 +32,7 @@ void SequencePoolKernel(const Context& dev_ctx,
   PADDLE_ENFORCE_GT(
       lod_level,
       0,
-      errors::InvalidArgument("Input(X) phi::DenseTensor of SequencePoolOp "
+      errors::InvalidArgument("Input(X) DenseTensor of SequencePoolOp "
                               "does not contain LoD information."));
   PADDLE_ENFORCE_LE(
       lod_level,
@@ -44,8 +44,8 @@ void SequencePoolKernel(const Context& dev_ctx,
       dims[0],
       /*batch size = */ static_cast<int64_t>(lod[lod_level - 1].size() - 1),
       errors::InvalidArgument(
-          "The first dimension of Input(X) must be large than batch size."
-          "But received first dimension of Input(X) is %d, while batch"
+          "The first dimension of Input(X) must be large than batch size. "
+          "But received first dimension of Input(X) is %d, while batch "
           "size is %d.",
           dims[0],
           static_cast<int64_t>(lod[lod_level - 1].size() - 1)));
@@ -61,16 +61,16 @@ void SequencePoolKernel(const Context& dev_ctx,
   dims[0] = lod[lod_level - 1].size() - 1;
   out->Resize({dims});
   dev_ctx.template Alloc<T>(out);
-  phi::DenseTensor* index = nullptr;
+  DenseTensor* index = nullptr;
 
   // Do not create index buffer for inference mode
   if (pooltype == "MAX" &&
-      (is_test == false || (dev_ctx.GetPlace() == phi::CPUPlace()) == false)) {
+      (is_test == false || (dev_ctx.GetPlace() == CPUPlace()) == false)) {
     index = max_index;
     index->Resize({dims});
     dev_ctx.template Alloc<int32_t>(index);
   }
-  phi::funcs::SequencePoolFunctor<Context, T> pool;
+  funcs::SequencePoolFunctor<Context, T> pool;
   pool(dev_ctx, pooltype, pad_value_, x, out, is_test, index);
 }
 

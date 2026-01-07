@@ -59,7 +59,7 @@ void IndexAddGradKernel(const Context& dev_ctx,
   // get x_grad: copy out_grad to x_grad.
   if (x_grad) {
     dev_ctx.template Alloc<T>(x_grad);
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
   }
 
   if (add_value_grad) {
@@ -83,6 +83,6 @@ PD_REGISTER_KERNEL(index_add_grad,
                    phi::IndexAddGradKernel,
                    float,
                    double,
-                   phi::dtype::float16,
+                   phi::float16,
                    int,
                    int64_t) {}

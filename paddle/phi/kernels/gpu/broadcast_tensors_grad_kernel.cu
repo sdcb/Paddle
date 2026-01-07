@@ -86,8 +86,7 @@ void BroadcastTensorsGradKernel(const Context& dev_ctx,
     dev_ctx.template Alloc<T>(output_tensor);
     if (just_copy) {
       // Turns out to be a No-Op, simply copy tensors
-      phi::Copy(
-          dev_ctx, *input_tensor, dev_ctx.GetPlace(), false, output_tensor);
+      Copy(dev_ctx, *input_tensor, dev_ctx.GetPlace(), false, output_tensor);
     } else {
       // reduce_sum implementation on CUDA
       phi::SumKernel<T, Context>(dev_ctx,
@@ -111,7 +110,7 @@ PD_REGISTER_KERNEL(broadcast_tensors_grad,
                    int64_t,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

@@ -74,7 +74,7 @@ void LaunchIndexPutCudaKernel(const Context& dev_ctx,
   bool is_initialized = out->initialized();
   T* out_data = dev_ctx.template Alloc<T>(out);
   if (!is_initialized) {
-    phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+    Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   }
 
   auto x_dims = x.dims();
@@ -131,18 +131,18 @@ void IndexPutKernel(const Context& dev_ctx,
       false,
       common::errors::InvalidArgument("Indices cannot be empty."));
   std::vector<DenseTensor> tmp_args;
-  std::vector<const phi::DenseTensor*> int_indices_v =
+  std::vector<const DenseTensor*> int_indices_v =
       funcs::DealWithBoolIndices<T, Context>(dev_ctx, indices, &tmp_args);
   if (int_indices_v.empty()) {
     if (!out->initialized()) {
-      phi::Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
+      Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
     }
     return;
   }
   auto bd_dim = funcs::BroadCastTensorsDims(int_indices_v);
 
   std::vector<int64_t> res_dim_v(common::vectorize(bd_dim));
-  std::vector<const phi::DenseTensor*> res_indices_v(x.dims().size(), nullptr);
+  std::vector<const DenseTensor*> res_indices_v(x.dims().size(), nullptr);
   std::vector<DenseTensor> tmp_res_indices_v;
   std::vector<DenseTensor> tmp_value_v;
   std::vector<DenseTensor> range_tensor_v;
@@ -189,7 +189,7 @@ PD_REGISTER_KERNEL(index_put,
                    int16_t,
                    uint8_t,
                    int8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {}

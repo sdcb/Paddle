@@ -19,14 +19,13 @@ limitations under the License. */
 #include "paddle/common/ddim.h"
 #include "paddle/phi/backends/context_pool.h"
 #include "paddle/phi/backends/dynload/cudnn.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/cpu/conv_util.h"
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/funcs/padding.h"
 #include "paddle/phi/kernels/funcs/slice.h"
+#include "paddle/phi/kernels/gpudnn/conv_gpudnn.h"
 #include "paddle/phi/kernels/transpose_kernel.h"
 
 #ifdef PADDLE_WITH_HIP
@@ -39,9 +38,11 @@ limitations under the License. */
 #endif
 #include "paddle/phi/kernels/full_kernel.h"
 
-namespace phi {
+#include "paddle/common/flags.h"
 
-using GPUDNNDataLayout = phi::backends::gpu::DataLayout;
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
+
+namespace phi {
 
 template <typename T, typename Context>
 void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
@@ -60,18 +61,14 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
   if (x.numel() == 0) {
     if (dx) dev_ctx.template Alloc<T>(dx);
     if (dfilter) {
-      phi::Full<T, Context>(dev_ctx,
-                            phi::IntArray(common::vectorize(dfilter->dims())),
-                            0,
-                            dfilter);
+      Full<T, Context>(dev_ctx, dfilter->dims(), 0, dfilter);
     }
     return;
   }
   if (filter.numel() == 0) {
     if (dfilter) dev_ctx.template Alloc<T>(dfilter);
     if (dx) {
-      phi::Full<T, Context>(
-          dev_ctx, phi::IntArray(common::vectorize(dx->dims())), 0, dx);
+      Full<T, Context>(dev_ctx, dx->dims(), 0, dx);
     }
     return;
   }
@@ -80,16 +77,15 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
   std::vector<int> paddings_ = paddings;
   std::vector<int> dilations_ =
       dilations;  // cudnn v5 does not support dilations
-  const GPUDNNDataLayout data_layout =
-      (data_format != "NHWC" ? GPUDNNDataLayout::kNCHW
-                             : GPUDNNDataLayout::kNHWC);
+  const DataLayout data_layout =
+      (data_format != "NHWC" ? DataLayout::NCHW : DataLayout::NHWC);
 
   // if channel_last, transpose to channel_first
   DenseTensor x_transpose;
   DenseTensor dout_transpose;
   std::vector<int> x_vec = common::vectorize<int>(x.dims());
   std::vector<int> out_vec = common::vectorize<int>(dout.dims());
-  if (data_layout == GPUDNNDataLayout::kNHWC) {
+  if (data_layout == DataLayout::NHWC) {
     if (strides.size() == 2U) {
       std::vector<int> axis = {0, 3, 1, 2};
       for (size_t i = 0; i < axis.size(); ++i) {
@@ -179,17 +175,23 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
   out_vec = common::vectorize<int>(transformed_dout.dims());
 
   // ------------------- cudnn descriptors ---------------------
-  GPUDNNDataLayout layout;
+#ifndef PADDLE_WITH_HIP
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_dout);
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(filter);
+  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(x_transpose);
+#endif
+
+  DataLayout layout;
 
   if (strides.size() == 2U) {
-    layout = GPUDNNDataLayout::kNCHW;
+    layout = DataLayout::NCHW;
   } else {
-    layout = GPUDNNDataLayout::kNCDHW;
+    layout = DataLayout::NCDHW;
   }
 
   int iwo_groups = groups;
   int c_groups = 1;
-#if defined(PADDLE_WITH_HIP) || CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_CUDA)
   iwo_groups = 1;
   c_groups = groups;
   groups = 1;
@@ -223,9 +225,6 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
   SearchResult<miopenConvFwdAlgorithm_t> fwd_result;
   SearchResult<miopenConvBwdWeightsAlgorithm_t> filter_result;
 #else
-  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_dout);
-  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(filter);
-  CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(x_transpose);
   SearchResult<cudnnConvolutionFwdAlgo_t> fwd_result;
   SearchResult<cudnnConvolutionBwdFilterAlgo_t> filter_result;
 #endif
@@ -334,7 +333,7 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
                                              false);
 #endif  // PADDLE_WITH_HIP
 
-    if (data_layout == GPUDNNDataLayout::kNHWC) {
+    if (data_layout == DataLayout::NHWC) {
       DenseTensor dx_transpose;
       DenseTensor dx_nchw;
       dx_nchw.ShareDataWith(*dx);
@@ -393,6 +392,53 @@ void ConvTransposeGradRawGPUDNNKernel(const Context& dev_ctx,
   }
 }
 
+#ifdef PADDLE_WITH_CUDNN_FRONTEND
+template <typename T, typename Context>
+void ConvTransposeGradRawGPUDNNKernelV8(const Context& dev_ctx,
+                                        const DenseTensor& x,
+                                        const DenseTensor& filter,
+                                        const DenseTensor& dout,
+                                        const std::vector<int>& strides,
+                                        const std::vector<int>& paddings,
+                                        const std::string& padding_algorithm,
+                                        int groups,
+                                        const std::vector<int>& dilations,
+                                        const std::string& data_format,
+                                        DenseTensor* dx,
+                                        DenseTensor* dfilter) {
+  // compute dx (Input Gradient)
+  if (dx) {
+    ConvCudnnKernel<T, Context>(dev_ctx,
+                                dout,
+                                filter,
+                                strides,
+                                paddings,
+                                padding_algorithm,
+                                dilations,
+                                groups,
+                                data_format,
+                                dx);
+  }
+
+  // compute dfilter (Filter Gradient)
+  if (dfilter) {
+    DenseTensor* null_input_grad = nullptr;
+    ConvCudnnGradKernel<T, Context>(dev_ctx,
+                                    dout,
+                                    filter,
+                                    x,
+                                    strides,
+                                    paddings,
+                                    padding_algorithm,
+                                    dilations,
+                                    groups,
+                                    data_format,
+                                    null_input_grad,
+                                    dfilter);
+  }
+}
+#endif
+
 template <typename T, typename Context>
 void Conv2dTransposeGradGPUDNNKernel(const Context& dev_ctx,
                                      const DenseTensor& x,
@@ -408,6 +454,35 @@ void Conv2dTransposeGradGPUDNNKernel(const Context& dev_ctx,
                                      const std::string& data_format,
                                      DenseTensor* dx,
                                      DenseTensor* dfilter) {
+#ifdef PADDLE_WITH_CUDNN_FRONTEND
+  if (dynload::IsCudnnFrontendEnabled() && FLAGS_use_accuracy_compatible_kernel)
+    ConvTransposeGradRawGPUDNNKernelV8<T, Context>(dev_ctx,
+                                                   x,
+                                                   filter,
+                                                   dout,
+                                                   strides,
+                                                   paddings_,
+                                                   padding_algorithm,
+                                                   groups,
+                                                   dilations_,
+                                                   data_format,
+                                                   dx,
+                                                   dfilter);
+  else
+    ConvTransposeGradRawGPUDNNKernel<T, Context>(dev_ctx,
+                                                 x,
+                                                 filter,
+                                                 dout,
+                                                 strides,
+                                                 paddings_,
+                                                 padding_algorithm,
+                                                 groups,
+                                                 dilations_,
+                                                 data_format,
+                                                 dx,
+                                                 dfilter);
+
+#else
   ConvTransposeGradRawGPUDNNKernel<T, Context>(dev_ctx,
                                                x,
                                                filter,
@@ -420,6 +495,7 @@ void Conv2dTransposeGradGPUDNNKernel(const Context& dev_ctx,
                                                data_format,
                                                dx,
                                                dfilter);
+#endif
 }
 
 /*
@@ -647,7 +723,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
 
   int iwo_group = groups;
   int c_group = 1;
-#if defined(PADDLE_WITH_HIP) || CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_CUDA)
   iwo_group = 1;
   c_group = groups;
   groups = 1;
@@ -655,8 +731,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
   auto dtype = phi::backends::gpu::CudnnDataType<T>::type;
 
   auto handle = dev_ctx.cudnn_handle();
-  auto layout =
-      phi::backends::gpu::GetCudnnTensorFormat(GPUDNNDataLayout::kNCHW);
+  auto layout = phi::backends::gpu::GetCudnnTensorFormat(DataLayout::NCHW);
 
   ConvArgs args1{handle,
                  &transformed_ddout_channel,
@@ -667,7 +742,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
   ConvArgs args2{handle,
                  &transformed_ddout_channel,
                  &ddfilter,
@@ -677,7 +752,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
 
   ConvArgs args3{handle,
                  &transformed_dout,
@@ -688,7 +763,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
   ConvArgs args4{handle,
                  &transformed_dout,
                  &ddfilter,
@@ -698,7 +773,7 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
                  dilations_,
                  dtype,
                  groups,
-                 GPUDNNDataLayout::kNCHW};
+                 DataLayout::NCHW};
 #ifdef PADDLE_WITH_HIP
   SearchResult<miopenConvBwdDataAlgorithm_t> bwd_result1;
   SearchResult<miopenConvBwdDataAlgorithm_t> bwd_result2;
@@ -817,22 +892,12 @@ void Conv2dTransposeDoubleGradGPUDNNKernel(
   }
 
   int i_n, i_c, i_d, i_h, i_w;
-  GetNCDHW(transformed_x.dims(),
-           GPUDNNDataLayout::kNCHW,
-           &i_n,
-           &i_c,
-           &i_d,
-           &i_h,
-           &i_w);
+  GetNCDHW(
+      transformed_x.dims(), DataLayout::NCHW, &i_n, &i_c, &i_d, &i_h, &i_w);
 
   int o_n, o_c, o_d, o_h, o_w;
-  GetNCDHW(transformed_dout.dims(),
-           GPUDNNDataLayout::kNCHW,
-           &o_n,
-           &o_c,
-           &o_d,
-           &o_h,
-           &o_w);
+  GetNCDHW(
+      transformed_dout.dims(), DataLayout::NCHW, &o_n, &o_c, &o_d, &o_h, &o_w);
 
   int group_offset_in =
       transformed_x.numel() / transformed_x.dims()[0] / groups;
@@ -1085,7 +1150,7 @@ void Conv3dTransposeGradGPUDNNKernel(const Context& dev_ctx,
 
 }  // namespace phi
 
-using float16 = phi::dtype::float16;
+using float16 = phi::float16;
 
 #ifdef PADDLE_WITH_HIP
 // MIOPEN do not support double
@@ -1116,7 +1181,7 @@ PD_REGISTER_KERNEL(conv2d_transpose_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(conv2d_transpose_double_grad,
                    GPUDNN,
                    ALL_LAYOUT,
@@ -1124,7 +1189,7 @@ PD_REGISTER_KERNEL(conv2d_transpose_double_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 PD_REGISTER_KERNEL(conv3d_transpose_grad,
                    GPUDNN,
                    ALL_LAYOUT,
@@ -1132,7 +1197,7 @@ PD_REGISTER_KERNEL(conv3d_transpose_grad,
                    float,
                    double,
                    float16,
-                   phi::dtype::bfloat16) {}
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(conv2d_transpose_grad,
                    GPUDNN,

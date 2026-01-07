@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/common/bfloat16.h"
+#include "paddle/phi/kernels/fusion/gpu/masked_multihead_attention_kernel.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/funcs/aligned_vector.h"
 #include "paddle/phi/kernels/fusion/gpu/mmha_util.cu.h"
@@ -840,7 +840,7 @@ void fmha_launch_kernel(const Masked_multihead_attention_params<T> &params,
     break;
 
 template <typename T, typename LoadFunc, typename StoreFunc, bool SPLIT>
-void fmha_impl(const phi::GPUContext &dev_ctx,
+void fmha_impl(const GPUContext &dev_ctx,
                const Masked_multihead_attention_params<T> &params,
                int dim_head,
                LoadFunc load_func,
@@ -863,13 +863,13 @@ void fmha_impl(const phi::GPUContext &dev_ctx,
 }
 
 template <typename T, bool SPLIT = false>
-void DispatchFMHA(const phi::GPUContext &dev_ctx,
-                  const phi::DenseTensor &qkv_tensor,
+void DispatchFMHA(const GPUContext &dev_ctx,
+                  const DenseTensor &qkv_tensor,
                   const Masked_multihead_attention_params<T> &params,
                   int num_head,
                   int dim_head,
-                  phi::DenseTensor *out_tensor,
-                  const phi::DenseTensor *dequant_qkv_scales = nullptr,
+                  DenseTensor *out_tensor,
+                  const DenseTensor *dequant_qkv_scales = nullptr,
                   const float quant_fmha_out_scale = -1,
                   const int quant_round_type = 1,
                   const float quant_max_bound = 127.0f,
@@ -910,15 +910,15 @@ void DispatchFMHA(const phi::GPUContext &dev_ctx,
 }
 
 template <typename T, bool SPLIT = false>
-void DispatchFMHA(const phi::GPUContext &dev_ctx,
-                  const phi::DenseTensor &qkv_tensor,
-                  const phi::DenseTensor &shift,
-                  const phi::DenseTensor &smooth,
+void DispatchFMHA(const GPUContext &dev_ctx,
+                  const DenseTensor &qkv_tensor,
+                  const DenseTensor &shift,
+                  const DenseTensor &smooth,
                   const Masked_multihead_attention_params<T> &params,
                   int num_head,
                   int dim_head,
-                  phi::DenseTensor *out_tensor,
-                  const phi::DenseTensor *dequant_qkv_scales = nullptr,
+                  DenseTensor *out_tensor,
+                  const DenseTensor *dequant_qkv_scales = nullptr,
                   const float quant_fmha_out_scale = -1,
                   const int quant_round_type = 1,
                   const float quant_max_bound = 127.0f,
@@ -1009,13 +1009,21 @@ void DispatchWithDtype(const Context &dev_ctx,
                        NormalVersion) {
   const auto &x_dims = x.dims();
   int bsz = x_dims[0];
-  int cache_bsz = cache_kv.dims()[1];
-  int max_seq_len = cache_kv.dims()[3];
-  int dim_head = cache_kv.dims()[4];
+  int64_t cache_bsz = cache_kv.dims()[1];
+  // TODO(large-tensor): downstream functors may still use int
+
+  int64_t max_seq_len = cache_kv.dims()[3];
+  // TODO(large-tensor): downstream functors may still use int
+
+  int64_t dim_head = cache_kv.dims()[4];
+  // TODO(large-tensor): downstream functors may still use int
+
   int timestep = max_seq_len;
   float inv_sqrt_dh = 1. / sqrt(dim_head);
 
-  int k_num_head = cache_kv.dims()[2];
+  int64_t k_num_head = cache_kv.dims()[2];
+  // TODO(large-tensor): downstream functors may still use int
+
   int v_num_head = k_num_head;
   // this num_head means query's head
   int num_head =
@@ -1099,14 +1107,14 @@ void DispatchWithDtype(const Context &dev_ctx,
     params.split_seq = (timestep - 1) / steps_per_block + 1;
     int split_seq = params.split_seq;
 
-    phi::DenseTensor qk_sum_max_split_seq;
+    DenseTensor qk_sum_max_split_seq;
     // 2 means sum and max.
     qk_sum_max_split_seq.Resize({{bsz, num_head, split_seq, 2}});
     dev_ctx.template Alloc<float>(&qk_sum_max_split_seq,
                                   qk_sum_max_split_seq.numel() * sizeof(float));
     params.qk_sum_max_split_seq = qk_sum_max_split_seq.data<float>();
 
-    phi::DenseTensor split_out;
+    DenseTensor split_out;
     split_out.Resize({{bsz, num_head, split_seq, dim_head}});
     dev_ctx.template Alloc<float>(&split_out,
                                   split_out.numel() * sizeof(float));
@@ -1225,7 +1233,7 @@ void MMHAKernel(const Context &dev_ctx,
   if (x.dtype() == phi::DataType::INT32) {
     switch (str2int(compute_dtype.c_str())) {
       case str2int("fp16"):
-        DispatchWithDtype<phi::dtype::float16, Context>(
+        DispatchWithDtype<phi::float16, Context>(
             dev_ctx,
             x,
             cache_kv,
@@ -1248,11 +1256,11 @@ void MMHAKernel(const Context &dev_ctx,
             out,
             cache_kv_out,
             beam_cache_offset_out,
-            typename DispatchDtypeTrait<phi::dtype::float16>::FuncVersion{});
+            typename DispatchDtypeTrait<phi::float16>::FuncVersion{});
         break;
 #if CUDA_VERSION >= 11000
       case str2int("bf16"):
-        DispatchWithDtype<phi::dtype::bfloat16, Context>(
+        DispatchWithDtype<phi::bfloat16, Context>(
             dev_ctx,
             x,
             cache_kv,
@@ -1275,7 +1283,7 @@ void MMHAKernel(const Context &dev_ctx,
             out,
             cache_kv_out,
             beam_cache_offset_out,
-            typename DispatchDtypeTrait<phi::dtype::bfloat16>::FuncVersion{});
+            typename DispatchDtypeTrait<phi::bfloat16>::FuncVersion{});
         break;
 #endif
       case str2int("fp32"):
@@ -1349,8 +1357,8 @@ PD_REGISTER_KERNEL(masked_multihead_attention,
                    ALL_LAYOUT,
                    phi::fusion::MMHAKernel,
                    float,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int32_t) {}
 #else
 PD_REGISTER_KERNEL(masked_multihead_attention,
@@ -1358,6 +1366,6 @@ PD_REGISTER_KERNEL(masked_multihead_attention,
                    ALL_LAYOUT,
                    phi::fusion::MMHAKernel,
                    float,
-                   phi::dtype::float16,
+                   phi::float16,
                    int32_t) {}
 #endif

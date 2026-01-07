@@ -243,13 +243,13 @@ class JudgeFusionLoop:
             return downstream_unrecomputable_ops
 
         for op in self.ops:
-            self.upstream_unrecomputable_ops_map[
-                op
-            ] |= _get_upstream_ops_recursively(op)
+            self.upstream_unrecomputable_ops_map[op] |= (
+                _get_upstream_ops_recursively(op)
+            )
         for op in reversed(self.ops):
-            self.downstream_unrecomputable_ops_map[
-                op
-            ] |= _get_downstream_ops_recursively(op)
+            self.downstream_unrecomputable_ops_map[op] |= (
+                _get_downstream_ops_recursively(op)
+            )
 
     def _has_unfusible_op_on_any_path(self, op1, op2):
         no_unfusible_op_on_path = (
@@ -322,61 +322,61 @@ def auto_recompute(
         fwd_op_end_idx(int): The index of the last forward op in recomputed program.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
-        >>> import numpy as np
-        >>> import paddle
-        >>> from paddle.autograd.ir_backward import grad as ir_grad
-        >>> from paddle.base import core
-        >>> from paddle.decomposition import decompose
-        >>> def forward(x):
-        ...     y = paddle.sin(x)
-        ...     z = paddle.cos(y)
-        ...     return z
+            >>> import numpy as np
+            >>> import paddle
+            >>> from paddle.autograd.ir_backward import grad as ir_grad
+            >>> from paddle.base import core
+            >>> from paddle.decomposition import decompose
+            >>> def forward(x):
+            ...     y = paddle.sin(x)
+            ...     z = paddle.cos(y)
+            ...     return z
 
-        >>> np_x = np.random.random(size=[4096, 4096]).astype("float32")
-        >>> paddle.enable_static()
-        >>> core._set_prim_all_enabled(True)
-        >>> main_program = paddle.static.Program()
-        >>> with paddle.static.program_guard(main_program):
-        >>>     x = paddle.static.data(
-        >>>         name="x", shape=[4096, 4096], dtype="float32"
-        >>>     )
-        >>>     x.stop_gradient = False
-        >>>     out = forward(x)
-        >>>     out_grad = paddle.full(
-        >>>         shape=out.shape, fill_value=3, dtype="float32"
-        >>>     )
-        >>>     [out] = decompose(main_program, [out])
-        >>>     [dx] = ir_grad(out, [x], out_grad)
-        >>>     main_program, _ = paddle.decomposition.auto_recompute(
-        >>>         main_program,
-        >>>         [x],
-        >>>         [out],
-        >>>         grad_outputs=[out_grad],
-        >>>         fwd_op_end_idx=2,
-        >>>         backward_op_start_idx=4
-        >>>     )
-        >>>     exe = paddle.static.Executor(paddle.CUDAPlace(0))
-        >>>     res = exe.run(
-        >>>         feed={'x': np_x},
-        >>>         fetch_list=[dx],
-        >>>     )
-        >>>     print(main_program)
-        {
-            (%0) = "pd_op.data" () {dtype:(pd_op.DataType)float32,name:"x",place:(pd_op.Place)Place(undefined:0),shape:(pd_op.IntArray)[4096,4096],stop_gradient:[false]} : () -> pd_op.tensor<4096x4096xf32>
-            (%1) = "pd_op.sin" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%2) = "pd_op.cos" (%1) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%3) = "pd_op.full" () {dtype:(pd_op.DataType)float32,place:(pd_op.Place)Place(undefined:0),shape:(pd_op.IntArray)[4096,4096],stop_gradient:[true],value:(Float)3} : () -> pd_op.tensor<4096x4096xf32>
-            (%4) = "pd_op.sin" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%5) = "pd_op.sin" (%4) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%6) = "pd_op.full" () {dtype:(pd_op.DataType)float32,place:(pd_op.Place)Place(cpu),shape:(pd_op.IntArray)[1],stop_gradient:[true],value:(Float)-1} : () -> pd_op.tensor<1xf32>
-            (%7) = "pd_op.scale" (%5, %6) {bias:(Float)0,bias_after_scale:true,stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<1xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%8) = "pd_op.multiply" (%7, %3) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%9) = "pd_op.cos" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%10) = "pd_op.multiply" (%9, %8) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-            (%11) = "pd_op.fetch" (%10) {col:(Int32)0,is_persistable:[true],name:"fetch0",stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
-        }
+            >>> np_x = np.random.random(size=[4096, 4096]).astype("float32")
+            >>> paddle.enable_static()
+            >>> core._set_prim_all_enabled(True)
+            >>> main_program = paddle.static.Program()
+            >>> with paddle.static.program_guard(main_program):
+            >>>     x = paddle.static.data(
+            >>>         name="x", shape=[4096, 4096], dtype="float32"
+            >>>     )
+            >>>     x.stop_gradient = False
+            >>>     out = forward(x)
+            >>>     out_grad = paddle.full(
+            >>>         shape=out.shape, fill_value=3, dtype="float32"
+            >>>     )
+            >>>     [out] = decompose(main_program, [out])
+            >>>     [dx] = ir_grad(out, [x], out_grad)
+            >>>     main_program, _ = paddle.decomposition.auto_recompute(
+            >>>         main_program,
+            >>>         [x],
+            >>>         [out],
+            >>>         grad_outputs=[out_grad],
+            >>>         fwd_op_end_idx=2,
+            >>>         backward_op_start_idx=4
+            >>>     )
+            >>>     exe = paddle.static.Executor(paddle.CUDAPlace(0))
+            >>>     res = exe.run(
+            >>>         feed={'x': np_x},
+            >>>         fetch_list=[dx],
+            >>>     )
+            >>>     print(main_program)
+            {
+                (%0) = "pd_op.data" () {dtype:(pd_op.DataType)float32,name:"x",place:(pd_op.Place)Place(undefined:0),shape:(pd_op.IntArray)[4096,4096],stop_gradient:[false]} : () -> pd_op.tensor<4096x4096xf32>
+                (%1) = "pd_op.sin" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%2) = "pd_op.cos" (%1) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%3) = "pd_op.full" () {dtype:(pd_op.DataType)float32,place:(pd_op.Place)Place(undefined:0),shape:(pd_op.IntArray)[4096,4096],stop_gradient:[true],value:(Float)3} : () -> pd_op.tensor<4096x4096xf32>
+                (%4) = "pd_op.sin" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%5) = "pd_op.sin" (%4) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%6) = "pd_op.full" () {dtype:(pd_op.DataType)float32,place:(pd_op.Place)Place(cpu),shape:(pd_op.IntArray)[1],stop_gradient:[true],value:(Float)-1} : () -> pd_op.tensor<1xf32>
+                (%7) = "pd_op.scale" (%5, %6) {bias:(Float)0,bias_after_scale:true,stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<1xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%8) = "pd_op.multiply" (%7, %3) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%9) = "pd_op.cos" (%0) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%10) = "pd_op.multiply" (%9, %8) {stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>, pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+                (%11) = "pd_op.fetch" (%10) {col:(Int32)0,is_persistable:[true],name:"fetch0",stop_gradient:[false]} : (pd_op.tensor<4096x4096xf32>) -> pd_op.tensor<4096x4096xf32>
+            }
     '''
     DebugPrint("program before recompute:", program)
     # 1. find smart recompute needed saved values by min-cut algorithm
@@ -752,7 +752,6 @@ def partition_joint_graph(
 def replace_mid_values_with_forward_subgraph(
     program, saved_values, mid_values, fwd_op_end_idx, backward_op_start_idx
 ):
-
     def _extract_forward_recompute_subgraph_for_backward(
         saved_values, mid_values
     ):

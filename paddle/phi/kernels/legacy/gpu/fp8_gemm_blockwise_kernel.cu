@@ -25,8 +25,6 @@
 
 #include "paddle/phi/backends/dynload/cublasLt.h"
 #include "paddle/phi/backends/gpu/gpu_info.h"
-#include "paddle/phi/common/float8_e4m3fn.h"
-#include "paddle/phi/common/float8_e5m2.h"
 #include "paddle/phi/common/memory_utils.h"
 
 #include "paddle/phi/api/include/context_pool.h"
@@ -105,15 +103,15 @@ void cublas_gemm_blockwise_impl(const Context& dev_ctx,
       false,
       common::errors::InvalidArgument("Only transb == false is supported"));
   PADDLE_ENFORCE_EQ(A.place().GetType(),
-                    phi::AllocationType::GPU,
+                    AllocationType::GPU,
                     common::errors::InvalidArgument(
                         "Input tensor A must be on CUDA device."));
   PADDLE_ENFORCE_EQ(B.place().GetType(),
-                    phi::AllocationType::GPU,
+                    AllocationType::GPU,
                     common::errors::InvalidArgument(
                         "Input tensor B must be on CUDA device."));
   PADDLE_ENFORCE_EQ(D->place().GetType(),
-                    phi::AllocationType::GPU,
+                    AllocationType::GPU,
                     common::errors::InvalidArgument(
                         "Output tensor D must be on CUDA device."));
   PADDLE_ENFORCE_EQ(IsFp8Dtype(A.dtype()),
@@ -229,6 +227,11 @@ void cublas_gemm_blockwise_impl(const Context& dev_ctx,
       CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
       &B_decode_scale_ptr,
       sizeof(B_decode_scale_ptr)));
+  PADDLE_CUDABLAS_CHECK(phi::dynload::cublasLtMatmulDescSetAttribute(
+      operationDesc,
+      CUBLASLT_MATMUL_DESC_SM_COUNT_TARGET,
+      &math_sm_count,
+      sizeof(math_sm_count)));
 
   // Setup mat layout descriptors
   cublasLtMatrixLayout_t Adesc = nullptr, Bdesc = nullptr, Cdesc = nullptr,
@@ -354,8 +357,8 @@ PD_REGISTER_KERNEL(fp8_gemm_blockwise,
                    GPU,
                    ALL_LAYOUT,
                    phi::Fp8GemmBlockwiseKernel,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float8_e4m3fn,
+                   phi::bfloat16,
+                   phi::float8_e4m3fn,
                    uint8_t,
                    float,
                    double) {}

@@ -33,18 +33,22 @@ void InterpolateKernel(
     int out_d,
     int out_h,
     int out_w,
-    const std::vector<float>& scale,
+    const std::vector<double>& scale,
     const std::string& interp_method,
     bool align_corners,
     int align_mode,
     DenseTensor* output) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(output);
+    return;
+  }
   using XPUType = typename XPUTypeTrait<T>::Type;
   const DataLayout data_layout = common::StringToDataLayout(data_layout_str);
-  int n, c, in_d, in_h, in_w;
-  phi::funcs::ExtractNCDWH(x.dims(), data_layout, &n, &c, &in_d, &in_h, &in_w);
+  int64_t n, c, in_d, in_h, in_w;
+  funcs::ExtractNCDWH(x.dims(), data_layout, &n, &c, &in_d, &in_h, &in_w);
 
-  float scale_h = -1;
-  float scale_w = -1;
+  double scale_h = -1;
+  double scale_w = -1;
 
   if (size_tensor && size_tensor->size() > 0) {
     // have size tensor
@@ -119,8 +123,8 @@ void InterpolateKernel(
       errors::InvalidArgument("out_w in Attr(out_shape) of Op(interpolate) "
                               "should be greater than 0."));
 
-  phi::DDim dim_out;
-  if (data_layout == DataLayout::kNCHW) {
+  DDim dim_out;
+  if (data_layout == DataLayout::NCHW) {
     dim_out = {n, c, out_h, out_w};
   } else {
     dim_out = {n, out_h, out_w, c};
@@ -137,7 +141,7 @@ void InterpolateKernel(
   if (nearest) {
     trans_mode = (align_corners == true) ? 0 : 2;
     PADDLE_ENFORCE_EQ(
-        (data_layout == DataLayout::kNCHW),
+        (data_layout == DataLayout::NCHW),
         true,
         errors::InvalidArgument("XPU nearest is only support NCHW"));
   }
@@ -154,7 +158,7 @@ void InterpolateKernel(
                                   out_w,
                                   nearest,
                                   trans_mode,
-                                  (data_layout == DataLayout::kNCHW));
+                                  (data_layout == DataLayout::NCHW));
   PADDLE_ENFORCE_XDNN_SUCCESS(r, "interpolate2d");
 }
 
@@ -169,7 +173,7 @@ void BilinearInterpKernel(
     int out_d,
     int out_h,
     int out_w,
-    const std::vector<float>& scale,
+    const std::vector<double>& scale,
     const std::string& interp_method,
     bool align_corners,
     int align_mode,
@@ -201,7 +205,7 @@ void NearestInterpKernel(
     int out_d,
     int out_h,
     int out_w,
-    const std::vector<float>& scale,
+    const std::vector<double>& scale,
     const std::string& interp_method,
     bool align_corners,
     int align_mode,
@@ -228,7 +232,7 @@ PD_REGISTER_KERNEL(bilinear_interp,
                    XPU,
                    ALL_LAYOUT,
                    phi::BilinearInterpKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float) {
   kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);
   kernel->InputAt(2).SetBackend(phi::Backend::ALL_BACKEND);
@@ -238,7 +242,7 @@ PD_REGISTER_KERNEL(nearest_interp,
                    XPU,
                    ALL_LAYOUT,
                    phi::NearestInterpKernel,
-                   phi::dtype::float16,
+                   phi::float16,
                    float,
                    int64_t) {
   kernel->InputAt(1).SetBackend(phi::Backend::ALL_BACKEND);

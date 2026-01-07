@@ -22,6 +22,7 @@
 #include "paddle/cinn/common/dim_expr_converter.h"
 #include "paddle/cinn/common/shape_constraint.h"
 #include "paddle/cinn/common/target.h"
+#include "paddle/cinn/hlir/dialect/operator/ir/generate_shape_util.h"
 #include "paddle/cinn/hlir/dialect/operator/ir/manual_op.h"
 #include "paddle/cinn/hlir/dialect/operator/transforms/group_merge/op_with_group_merge_util.h"
 #include "paddle/cinn/hlir/framework/compile_error.h"
@@ -434,6 +435,7 @@ std::vector<CondFuncPriorWrapper> OpLowererImpl::PostProcess(
 #endif
           },
           [&](std::variant<common::HygonDCUArchHIP, common::HygonDCUArchSYCL>) {
+#if defined(PADDLE_WITH_SYCL) || defined(PADDLE_WITH_HIP)
             // optim::EliminateCommonGlobalMemoryRead(&(func_body));
             ir::stmt::BlockRef func_body_block =
                 ir::ConvertExprBlockToStmtBlock(func_body);
@@ -443,6 +445,7 @@ std::vector<CondFuncPriorWrapper> OpLowererImpl::PostProcess(
             VLOG(4) << "After OptimizeExprGPU in op_lowering_impl: \n"
                     << func_body_block;
             func_body = ir::ConvertStmtBlockToExprBlock(func_body_block);
+#endif
           });
     }
 

@@ -19,6 +19,7 @@
 #include "paddle/phi/common/memory_utils.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 
 namespace phi {
 
@@ -45,8 +46,10 @@ __global__ void GPURoiPoolForward(const IndexType nthreads,
                                   T* output_data,
                                   int64_t* arg_max_data) {
   IndexType index =
-      static_cast<IndexType>(blockIdx.x) * blockDim.x + threadIdx.x;
-  IndexType offset = static_cast<IndexType>(blockDim.x) * gridDim.x;
+      static_cast<IndexType>(blockIdx.x) * static_cast<IndexType>(blockDim.x) +
+      static_cast<IndexType>(threadIdx.x);
+  IndexType offset =
+      static_cast<IndexType>(blockDim.x) * static_cast<IndexType>(gridDim.x);
   for (size_t i = index; i < nthreads; i += offset) {
     IndexType pw = i % pooled_width;
     IndexType ph = (i / pooled_width) % pooled_height;
@@ -117,11 +120,13 @@ void RoiPoolKernel(const Context& dev_ctx,
   int64_t channels = x_dims[1];
   int64_t height = x_dims[2];
   int64_t width = x_dims[3];
-
   int64_t rois_num = boxes.dims()[0];
 
-  if (rois_num == 0) {
-    dev_ctx.template Alloc<T>(out);
+  if (x.numel() == 0 || boxes.numel() == 0) {
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(out->dims())), 0, out);
+    phi::Full<int64_t, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(arg_max->dims())), 0, arg_max);
     return;
   }
 
@@ -135,7 +140,10 @@ void RoiPoolKernel(const Context& dev_ctx,
   auto gplace = dev_ctx.GetPlace();
 
   if (boxes_num) {
-    int boxes_batch_size = boxes_num->numel();
+    int64_t boxes_batch_size = boxes_num->numel();
+    // TODO(large-tensor): downstream functors may still use int; guard until
+    // upgraded.
+
     PADDLE_ENFORCE_EQ(
         boxes_batch_size,
         batch_size,
@@ -146,7 +154,7 @@ void RoiPoolKernel(const Context& dev_ctx,
             boxes_batch_size,
             batch_size));
     std::vector<int> boxes_num_list(boxes_batch_size);
-    memory_utils::Copy(phi::CPUPlace(),
+    memory_utils::Copy(CPUPlace(),
                        boxes_num_list.data(),
                        gplace,
                        boxes_num->data<int>(),
@@ -196,7 +204,7 @@ void RoiPoolKernel(const Context& dev_ctx,
   int* box_id_data = reinterpret_cast<int*>(box_ptr->ptr());
   memory_utils::Copy(gplace,
                      box_id_data,
-                     phi::CPUPlace(),
+                     CPUPlace(),
                      box_batch_id_data,
                      bytes,
                      dev_ctx.stream());

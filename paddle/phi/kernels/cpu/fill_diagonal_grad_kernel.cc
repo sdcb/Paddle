@@ -29,7 +29,7 @@ void FillDiagonalGradKernel(const Context& dev_ctx,
   if (x_grad) {
     T* data = dev_ctx.template Alloc<T>(x_grad);
     if (x_grad->numel() == 0) return;
-    phi::Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
+    Copy(dev_ctx, out_grad, dev_ctx.GetPlace(), false, x_grad);
 
     auto dx_dims = x_grad->dims();
     auto strides = funcs::CalStride(dx_dims);
@@ -61,5 +61,5 @@ PD_REGISTER_KERNEL(fill_diagonal_grad,
                    double,
                    int64_t,
                    int,
-                   phi::dtype::float16,
+                   phi::float16,
                    bool) {}

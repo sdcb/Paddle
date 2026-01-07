@@ -17,6 +17,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/batch_norm_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/funcs/eigen/common.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
@@ -106,13 +107,13 @@ void BatchNormGradFunctor(const Context& dev_ctx,
           x_dims.size()));
   const int N = static_cast<int>(x_dims[0]);
   const int C = static_cast<int>(
-      data_layout == DataLayout::kNCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
+      data_layout == DataLayout::NCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
   const int sample_size = static_cast<int>(x.numel() / N / C);
 
   // input dimension is 2 and the format is NCHW. The input can be regarded as
   // NHWC format
-  if (x_dims.size() == 2 && data_layout == DataLayout::kNCHW) {
-    data_layout = DataLayout::kNHWC;
+  if (x_dims.size() == 2 && data_layout == DataLayout::NCHW) {
+    data_layout = DataLayout::NHWC;
   }
 
   // init output
@@ -162,7 +163,7 @@ void BatchNormGradFunctor(const Context& dev_ctx,
   }
 
   if (d_x && (N * sample_size) == 1 && !use_global_stats) {
-    phi::Copy(dev_ctx, *d_y, dev_ctx.GetPlace(), false, d_x);
+    Copy(dev_ctx, *d_y, dev_ctx.GetPlace(), false, d_x);
     return;
   }
   auto* Scale = scale.get_ptr();
@@ -206,7 +207,7 @@ void BatchNormGradFunctor(const Context& dev_ctx,
   //   formula transform ====>
   //    (y - bias) / (scale * inv_var) + est_mean
   switch (data_layout) {
-    case DataLayout::kNCHW: {
+    case DataLayout::NCHW: {
       if (is_inplace) {
         auto px = x;
         EigenArrayMap<T> x_data(
@@ -255,7 +256,7 @@ void BatchNormGradFunctor(const Context& dev_ctx,
       }
       break;
     }
-    case DataLayout::kNHWC: {
+    case DataLayout::NHWC: {
       if (is_inplace) {
         auto px = x;
         EigenArrayMap<T> x_data(
@@ -326,6 +327,21 @@ void BatchNormGradKernel(const Context& dev_ctx,
                          DenseTensor* x_grad,
                          DenseTensor* scale_grad,
                          DenseTensor* bias_grad) {
+  if (x.numel() == 0) {
+    dev_ctx.template Alloc<T>(x_grad);
+    if (scale_grad)
+      phi::Full<T, Context>(
+          dev_ctx,
+          phi::IntArray(common::vectorize(scale_grad->dims())),
+          0,
+          scale_grad);
+    if (bias_grad)
+      phi::Full<T, Context>(dev_ctx,
+                            phi::IntArray(common::vectorize(bias_grad->dims())),
+                            0,
+                            bias_grad);
+    return;
+  }
   BatchNormGradFunctor<T, Context>(dev_ctx,
                                    x,
                                    scale,
@@ -397,9 +413,9 @@ void BatchNormDoubleGradKernel(
 
   const auto& x_dims = X->dims();
   const int C = static_cast<int>(
-      data_layout == DataLayout::kNCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
+      data_layout == DataLayout::NCHW ? x_dims[1] : x_dims[x_dims.size() - 1]);
   const int sample_size = static_cast<int>(X->numel() / C);
-  phi::funcs::SetConstant<Context, T> set_constant;
+  funcs::SetConstant<Context, T> set_constant;
 
   const T* mean_data = Saved_mean->data<T>();
   const T* inv_var_data = Saved_variance->data<T>();
@@ -426,7 +442,7 @@ void BatchNormDoubleGradKernel(
 
   DenseTensor transformed_dx(dX->type());
   DenseTensor transformed_ddy(ddY->type());
-  if (data_layout == DataLayout::kNCHW && x_dims.size() > 2) {
+  if (data_layout == DataLayout::NCHW && x_dims.size() > 2) {
     VLOG(3) << "Transform batchnorm output from NCHW to NHWC";
     // Input Tensor
     ResizeToChannelLast<Context, T>(dev_ctx, X, &transformed_x);
@@ -569,7 +585,7 @@ void BatchNormDoubleGradKernel(
             ddscale_tile_data;
       }
     }
-    if (data_layout == DataLayout::kNCHW) {
+    if (data_layout == DataLayout::NCHW) {
       VLOG(3) << "Transform batchnorm output from NHWC to NCHW";
       TransToChannelFirst<Context, T>(dev_ctx, &transformed_dx, dX);
     }
@@ -658,7 +674,7 @@ void BatchNormDoubleGradKernel(
       ddy_arr += ddbias_tile_data;
     }
 
-    if (data_layout == DataLayout::kNCHW) {
+    if (data_layout == DataLayout::NCHW) {
       VLOG(3) << "Transform batchnorm output from NHWC to NCHW";
       TransToChannelFirst<Context, T>(dev_ctx, &transformed_ddy, ddY);
     }

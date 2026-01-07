@@ -12,8 +12,20 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <winternl.h>
+#include <codecvt>
+#include <locale>
+#else
+#include <sys/mman.h>
+#endif
 #include <Python.h>
 
+#include <glog/logging.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -69,9 +81,12 @@ limitations under the License. */
 #include "paddle/fluid/imperative/amp_auto_cast.h"
 #include "paddle/fluid/imperative/layer.h"
 #include "paddle/fluid/prim/utils/utils.h"
+#include "paddle/fluid/pybind/size.h"
+#include "paddle/fluid/pybind/torch_compat.h"
 #include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/common/float16.h"
 #include "paddle/phi/common/int_array.h"
+#include "paddle/phi/common/logging_utils.h"
 #include "paddle/phi/core/framework/reader.h"
 #include "paddle/phi/core/memory/allocation/allocator_strategy.h"
 #include "paddle/phi/core/raw_tensor.h"
@@ -95,6 +110,7 @@ limitations under the License. */
 #include "paddle/fluid/pybind/compatible.h"
 #include "paddle/fluid/pybind/const_value.h"
 #include "paddle/fluid/pybind/cuda_streams_py.h"
+#include "paddle/fluid/pybind/cudart_py.h"
 #include "paddle/fluid/pybind/custom_device_py.h"
 #include "paddle/fluid/pybind/data_set_py.h"
 #include "paddle/fluid/pybind/distributed_py.h"
@@ -106,25 +122,27 @@ limitations under the License. */
 #include "paddle/fluid/pybind/gloo_context_py.h"
 #include "paddle/fluid/pybind/gloo_wrapper_py.h"
 #include "paddle/fluid/pybind/graph.h"
-#include "paddle/fluid/pybind/heter_wrapper_py.h"
 #include "paddle/fluid/pybind/imperative.h"
 #include "paddle/fluid/pybind/inference_api.h"
 #include "paddle/fluid/pybind/io.h"
 #include "paddle/fluid/pybind/jit.h"
 #include "paddle/fluid/pybind/metrics_py.h"
+#include "paddle/fluid/pybind/native_meta_tensor.h"
 #include "paddle/fluid/pybind/pir.h"
-#include "paddle/fluid/pybind/ps_gpu_wrapper_py.h"
 #include "paddle/fluid/pybind/pybind_variant_caster.h"
 #include "paddle/fluid/pybind/python_callable_registry.h"
 #include "paddle/fluid/pybind/xpu_streams_py.h"
 #include "paddle/phi/backends/cpu/cpu_info.h"
 #include "paddle/phi/backends/device_manager.h"
 #include "paddle/phi/backends/dynload/dynamic_loader.h"
+#include "paddle/phi/backends/gpu/gpu_info.h"
+#include "paddle/phi/backends/xpu/xpu_info.h"
 #include "paddle/phi/common/data_type.h"
 #include "paddle/phi/common/place.h"
 #include "paddle/phi/core/compat/convert_utils.h"
 #include "paddle/phi/core/lod_utils.h"
 #include "paddle/phi/core/memory/allocation/mmap_allocator.h"
+#include "paddle/phi/core/memory/mem_utils.h"
 #include "paddle/phi/core/platform/cpu_helper.h"
 #include "paddle/phi/core/platform/device/device_wrapper.h"
 #include "paddle/phi/core/platform/device_context.h"
@@ -165,8 +183,10 @@ limitations under the License. */
 #endif
 
 #ifdef PADDLE_WITH_XPU
+#include "paddle/phi/core/memory/allocation/xpu_ipc_allocator.h"
 #include "paddle/phi/core/platform/device/xpu/xpu_info.h"
 #include "paddle/phi/core/platform/device/xpu/xpu_op_list.h"
+#include "paddle/phi/core/platform/device/xpu/xpu_profiler.h"
 #endif
 
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
@@ -177,6 +197,7 @@ limitations under the License. */
 #include "paddle/phi/core/platform/device/custom/custom_device_resource_pool.h"
 #endif
 
+#include "paddle/phi/backends/c_cuda_graph_lib.h"
 #include "paddle/phi/core/platform/cuda_graph_with_memory_pool.h"
 
 #ifdef PADDLE_WITH_IPU
@@ -188,17 +209,8 @@ limitations under the License. */
 #include "paddle/fluid/pybind/crypto.h"
 #endif
 
-#if defined PADDLE_WITH_PSCORE
-#include "paddle/fluid/pybind/fleet_py.h"
-#endif
-
 #ifdef PADDLE_WITH_CINN
-#include "paddle/cinn/pybind/bind.h"
 #include "paddle/fluid/pybind/test.h"
-#endif
-
-#if defined(PADDLE_WITH_RPC)
-#include "paddle/fluid/pybind/rpc.h"
 #endif
 
 #include "paddle/common/flags.h"
@@ -217,6 +229,7 @@ limitations under the License. */
 #include "paddle/fluid/prim/utils/static/static_tensor_operants.h"
 #include "paddle/fluid/primitive/base/decomp_trans.h"
 #include "paddle/fluid/pybind/eager_utils.h"
+#include "paddle/fluid/pybind/op_function_common.h"
 #include "paddle/phi/api/ext/op_meta_info.h"
 #include "paddle/phi/api/include/operants_manager.h"
 #include "paddle/phi/api/include/tensor_operants.h"
@@ -232,8 +245,14 @@ limitations under the License. */
 #include "paddle/fluid/platform/tensorrt/trt_plugin.h"
 #endif
 #include "paddle/fluid/eager/accumulation/accumulation_node.h"
+#ifdef PADDLE_WITH_CUDA
+#include "paddle/fluid/eager/activation_offloader.h"
+#endif
+#include "paddle/phi/core/memory/allocation/retry_allocator.h"
 
 COMMON_DECLARE_bool(use_mkldnn);
+COMMON_DECLARE_bool(use_onednn);
+COMMON_DECLARE_int64(offload_retry_times);
 COMMON_DECLARE_string(prim_backward_blacklist);
 
 // disable auto conversion to list in Python
@@ -373,7 +392,7 @@ bool IsCompiledWithIPU() {
 #endif
 }
 
-bool IsCompiledWithMKLDNN() {
+bool IsCompiledWithONEDNN() {
 #ifndef PADDLE_WITH_DNNL
   return false;
 #else
@@ -389,13 +408,7 @@ bool IsCompiledWithCINN() {
 #endif
 }
 
-bool IsCompiledWithHETERPS() {
-#ifndef PADDLE_WITH_HETERPS
-  return false;
-#else
-  return true;
-#endif
-}
+bool IsCompiledWithHETERPS() { return false; }
 
 bool SupportsBfloat16() {
 #ifndef PADDLE_WITH_DNNL
@@ -462,37 +475,39 @@ struct iinfo {
   int bits;
   std::string dtype;
 
-  explicit iinfo(const framework::proto::VarType::Type &type) {
+#define CASE_IINFO_BODY(type, ctype)         \
+  do {                                       \
+    min = std::numeric_limits<ctype>::min(); \
+    max = std::numeric_limits<ctype>::max(); \
+    bits = sizeof(ctype) * 8;                \
+    dtype = #type;                           \
+  } while (0)
+
+  explicit iinfo(const phi::DataType &type) {
     switch (type) {
-      case framework::proto::VarType::INT16:
-        min = std::numeric_limits<int16_t>::min();
-        max = std::numeric_limits<int16_t>::max();
-        bits = 16;
-        dtype = "int16";
+      case phi::DataType::UINT8:
+        CASE_IINFO_BODY(uint8, uint8_t);
         break;
-      case framework::proto::VarType::INT32:
-        min = std::numeric_limits<int32_t>::min();
-        max = std::numeric_limits<int32_t>::max();
-        bits = 32;
-        dtype = "int32";
+      case phi::DataType::UINT16:
+        CASE_IINFO_BODY(uint16, uint16_t);
         break;
-      case framework::proto::VarType::INT64:
-        min = std::numeric_limits<int64_t>::min();
-        max = std::numeric_limits<int64_t>::max();
-        bits = 64;
-        dtype = "int64";
+      case phi::DataType::UINT32:
+        CASE_IINFO_BODY(uint32, uint32_t);
         break;
-      case framework::proto::VarType::INT8:
-        min = std::numeric_limits<int8_t>::min();  // NOLINT
-        max = std::numeric_limits<int8_t>::max();
-        bits = 8;
-        dtype = "int8";
+      case phi::DataType::UINT64:
+        CASE_IINFO_BODY(uint64, uint64_t);
         break;
-      case framework::proto::VarType::UINT8:
-        min = std::numeric_limits<uint8_t>::min();
-        max = std::numeric_limits<uint8_t>::max();
-        bits = 8;
-        dtype = "uint8";
+      case phi::DataType::INT8:
+        CASE_IINFO_BODY(int8, int8_t);
+        break;
+      case phi::DataType::INT16:
+        CASE_IINFO_BODY(int16, int16_t);
+        break;
+      case phi::DataType::INT32:
+        CASE_IINFO_BODY(int32, int32_t);
+        break;
+      case phi::DataType::INT64:
+        CASE_IINFO_BODY(int64, int64_t);
         break;
       default:
         PADDLE_THROW(common::errors::InvalidArgument(
@@ -501,6 +516,7 @@ struct iinfo {
         break;
     }
   }
+#undef CASE_IINFO_BODY
 };
 
 struct finfo {
@@ -513,60 +529,50 @@ struct finfo {
   double resolution;
   std::string dtype;
 
-  explicit finfo(const framework::proto::VarType::Type &type) {
+#define CASE_FINFO_BODY(type, ctype)                                  \
+  do {                                                                \
+    eps = std::numeric_limits<ctype>::epsilon();                      \
+    min = std::numeric_limits<ctype>::lowest();                       \
+    max = std::numeric_limits<ctype>::max();                          \
+    smallest_normal = std::numeric_limits<ctype>::min();              \
+    tiny = smallest_normal;                                           \
+    resolution = std::pow(10, -std::numeric_limits<ctype>::digits10); \
+    bits = sizeof(ctype) * 8;                                         \
+    dtype = #type;                                                    \
+  } while (0)
+
+  explicit finfo(const phi::DataType &type) {
     switch (type) {
-      case framework::proto::VarType::FP16:
-        eps = std::numeric_limits<phi::dtype::float16>::epsilon();
-        min = std::numeric_limits<phi::dtype::float16>::lowest();
-        max = std::numeric_limits<phi::dtype::float16>::max();
-        smallest_normal = std::numeric_limits<phi::dtype::float16>::min();
-        tiny = smallest_normal;
-        resolution =
-            std::pow(10, -std::numeric_limits<phi::dtype::float16>::digits10);
-        bits = 16;
-        dtype = "float16";
+      case phi::DataType::FLOAT8_E4M3FN:
+        CASE_FINFO_BODY(float8_e4m3fn, phi::dtype::float8_e4m3fn);
         break;
-      case framework::proto::VarType::FP32:
-      case framework::proto::VarType::COMPLEX64:
-        eps = std::numeric_limits<float>::epsilon();
-        min = std::numeric_limits<float>::lowest();
-        max = std::numeric_limits<float>::max();
-        smallest_normal = std::numeric_limits<float>::min();
-        tiny = smallest_normal;
-        resolution = std::pow(10, -std::numeric_limits<float>::digits10);
-        bits = 32;
-        dtype = "float32";
+      case phi::DataType::FLOAT8_E5M2:
+        CASE_FINFO_BODY(float8_e5m2, phi::dtype::float8_e5m2);
         break;
-      case framework::proto::VarType::FP64:
-      case framework::proto::VarType::COMPLEX128:
-        eps = std::numeric_limits<double>::epsilon();
-        min = std::numeric_limits<double>::lowest();
-        max = std::numeric_limits<double>::max();
-        smallest_normal = std::numeric_limits<double>::min();
-        tiny = smallest_normal;
-        resolution = std::pow(10, -std::numeric_limits<double>::digits10);
-        bits = 64;
-        dtype = "float64";
+      case phi::DataType::FLOAT16:
+        CASE_FINFO_BODY(float16, phi::dtype::float16);
         break;
-      case framework::proto::VarType::BF16:
-        eps = std::numeric_limits<phi::dtype::bfloat16>::epsilon();
-        min = std::numeric_limits<phi::dtype::bfloat16>::lowest();
-        max = std::numeric_limits<phi::dtype::bfloat16>::max();
-        smallest_normal = std::numeric_limits<phi::dtype::bfloat16>::min();
-        tiny = smallest_normal;
-        resolution =
-            std::pow(10, -std::numeric_limits<phi::dtype::bfloat16>::digits10);
-        bits = 16;
-        dtype = "bfloat16";
+      case phi::DataType::BFLOAT16:
+        CASE_FINFO_BODY(bfloat16, phi::dtype::bfloat16);
+        break;
+      case phi::DataType::FLOAT32:
+      case phi::DataType::COMPLEX64:
+        CASE_FINFO_BODY(float32, float);
+        break;
+      case phi::DataType::FLOAT64:
+      case phi::DataType::COMPLEX128:
+        CASE_FINFO_BODY(float64, double);
         break;
       default:
         PADDLE_THROW(common::errors::InvalidArgument(
-            "the argument of paddle.finfo can only be paddle.float32, "
-            "paddle.float64, paddle.float16, paddle.bfloat16"
-            "paddle.complex64, or paddle.complex128"));
+            "The argument of paddle.finfo can only be paddle.float32, "
+            "paddle.float64, paddle.float16, paddle.bfloat16, "
+            "paddle.float8_e4m3fn, paddle.float8_e5m2, "
+            "paddle.complex64 or paddle.complex128"));
         break;
     }
   }
+#undef CASE_FINFO_BODY
 };
 
 static PyObject *GetPythonAttribute(PyObject *obj, const char *attr_name) {
@@ -757,6 +763,473 @@ class PyLayerBlockContextManager {
  private:
   // disable default constructor
   PyLayerBlockContextManager() = default;
+};
+
+int DLPackDLTensorFromPyObjectNoSync(void *py_obj, DLTensor *out) {
+  try {
+    // Use handle (non-owning) to avoid unnecessary refcount operations
+    py::handle handle(static_cast<PyObject *>(py_obj));
+    paddle::Tensor tensor = handle.cast<paddle::Tensor>();
+    std::shared_ptr<phi::DenseTensor> dense_tensor =
+        std::static_pointer_cast<phi::DenseTensor>(tensor.impl());
+    paddle::framework::ToDLPackNonOwningImpl(*dense_tensor, out);
+    return 0;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return -1;
+  }
+}
+
+int DLPackManagedTensorFromPyObjectNoSync(void *py_obj,
+                                          DLManagedTensorVersioned **out) {
+  try {
+    py::handle handle(static_cast<PyObject *>(py_obj));
+    paddle::Tensor tensor = handle.cast<paddle::Tensor>();
+    std::shared_ptr<phi::DenseTensor> dense_tensor =
+        std::static_pointer_cast<phi::DenseTensor>(tensor.impl());
+    *out = paddle::framework::ToDLPackVersioned(*dense_tensor);
+    return 0;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return -1;
+  }
+}
+
+int DLPackManagedTensorToPyObjectNoSync(DLManagedTensorVersioned *src,
+                                        void **py_obj_out) {
+  try {
+    phi::DenseTensor dense_tensor = paddle::framework::FromDLPackVersioned(src);
+    paddle::Tensor tensor(std::make_shared<phi::DenseTensor>(dense_tensor));
+    egr::EagerUtils::autograd_meta(&tensor)->SetPersistable(false);
+    *py_obj_out = ToPyObject(tensor);
+    return 0;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return -1;
+  }
+}
+
+int DLPackManagedTensorAllocator(::DLTensor *prototype,
+                                 ::DLManagedTensorVersioned **out,
+                                 void *error_ctx,
+                                 void (*SetError)(void *error_ctx,
+                                                  const char *kind,
+                                                  const char *message)) {
+  try {
+    phi::IntArray shape(prototype->shape, prototype->ndim);
+    phi::Place place(paddle::framework::DLDeviceToPlace(prototype->device));
+    phi::DataType dtype =
+        paddle::framework::DLDataTypeToPhiDataType(prototype->dtype);
+    paddle::Tensor tensor = paddle::empty(shape, dtype, place);
+    std::shared_ptr<phi::DenseTensor> dense_tensor =
+        std::static_pointer_cast<phi::DenseTensor>(tensor.impl());
+    *out = paddle::framework::ToDLPackVersioned(*dense_tensor);
+    return 0;
+  } catch (const std::exception &e) {
+    SetError(error_ctx, "DLPackManagedTensorAllocator", e.what());
+    return -1;
+  }
+}
+
+int DLPackCurrentWorkStream(DLDeviceType device_type,
+                            int32_t device_id,
+                            void **out_stream) {
+  try {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
+    if (device_type == kDLCUDA || device_type == kDLROCM) {
+      *out_stream = platform::get_current_stream(device_id)->raw_stream();
+    }
+#endif
+    return 0;
+  } catch (const std::exception &e) {
+    PyErr_SetString(PyExc_RuntimeError, e.what());
+    return -1;
+  }
+}
+
+struct PaddleDLPackExchangeAPI : public ::DLPackExchangeAPI {
+  PaddleDLPackExchangeAPI() {
+    header.version.major = DLPACK_MAJOR_VERSION;
+    header.version.minor = DLPACK_MINOR_VERSION;
+    header.prev_api = nullptr;
+    managed_tensor_allocator = DLPackManagedTensorAllocator;
+    managed_tensor_from_py_object_no_sync =
+        DLPackManagedTensorFromPyObjectNoSync;
+    managed_tensor_to_py_object_no_sync = DLPackManagedTensorToPyObjectNoSync;
+    dltensor_from_py_object_no_sync = DLPackDLTensorFromPyObjectNoSync;
+    current_work_stream = DLPackCurrentWorkStream;
+  }
+
+  static const DLPackExchangeAPI *Instance() {
+    static PaddleDLPackExchangeAPI inst;
+    return &inst;
+  }
+};
+
+// NOTE: use to load file by Mmap
+enum MMapLoadModes {
+  ALLOCATOR_MAPPED_SHARED = 1,
+  ALLOCATOR_MAPPED_SHAREDMEM = 2,
+  ALLOCATOR_MAPPED_EXCLUSIVE = 4,
+  ALLOCATOR_MAPPED_NOCREATE = 8,
+  ALLOCATOR_MAPPED_KEEPFD = 16,
+  ALLOCATOR_MAPPED_FROMFD = 32,
+  ALLOCATOR_MAPPED_UNLINK = 64
+};
+struct MmapStorage {
+  MmapStorage(const std::string &filename_, int64_t nbytes)
+      : base_ptr_(nullptr), size(nbytes) {
+    // https://github.com/pytorch/pytorch/blob/d58ed04d89c34c6930d0f28be351c53db407078f/aten/src/ATen/MapAllocator.cpp#L65-L370
+    int flags_{0};
+    if ((flags_ ^ ALLOCATOR_MAPPED_EXCLUSIVE) == 0) {
+      PADDLE_THROW(common::errors::Unavailable(
+          "ALLOCATOR_MAPPED_EXCLUSIVE flag requires opening the file in shared "
+          "mode"));
+    }
+    if (!(flags_ & ALLOCATOR_MAPPED_SHARED) &&
+        !(flags_ & ALLOCATOR_MAPPED_SHAREDMEM)) {
+      flags_ &= ~ALLOCATOR_MAPPED_NOCREATE;
+    }
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN64)
+    constexpr const char *unknown_eventname = "eventname not specified";
+    void *handle_ = INVALID_HANDLE_VALUE;
+    void *event_ = INVALID_HANDLE_VALUE;
+    std::string eventname_ = filename_.empty()
+                                 ? unknown_eventname
+                                 : (std::string(filename_) + "_event");
+
+    if (flags_ & ALLOCATOR_MAPPED_SHAREDMEM) {
+      // Shadowing
+      const wchar_t *filename;
+      const wchar_t *eventname;
+      std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+      const std::wstring wFilename = converter.from_bytes(filename_);
+      const std::wstring wEventname = converter.from_bytes(eventname_);
+      LARGE_INTEGER hfilesz;
+
+      if (filename_[0] == '/') {
+        filename = wFilename.c_str() + 1;
+        eventname = wEventname.c_str() + 1;
+      } else {
+        filename = wFilename.c_str();
+        eventname = wEventname.c_str();
+      }
+
+      hfilesz.QuadPart = size;
+
+      if (flags_ & ALLOCATOR_MAPPED_EXCLUSIVE) {
+        event_ = CreateEventW(nullptr, FALSE, FALSE, eventname);
+      } else if (flags_ & ALLOCATOR_MAPPED_NOCREATE) {
+        event_ = OpenEventW(EVENT_ALL_ACCESS, FALSE, eventname);
+      } else {
+        PADDLE_THROW(common::errors::Unavailable(
+            "Expected either ALLOCATOR_MAPPED_EXCLUSIVE or "
+            "ALLOCATOR_MAPPED_NOCREATE"));
+      }
+
+      if (event_ == nullptr) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "Couldn't open shared event: <%s>.", eventname));
+      }
+
+      if (flags_ & ALLOCATOR_MAPPED_EXCLUSIVE) {
+        handle_ = CreateFileMappingW(INVALID_HANDLE_VALUE,
+                                     nullptr,
+                                     PAGE_READWRITE,
+                                     hfilesz.HighPart,
+                                     hfilesz.LowPart,
+                                     filename);
+      } else if (flags_ & ALLOCATOR_MAPPED_NOCREATE) {
+        handle_ = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, filename);
+      } else {
+        PADDLE_THROW(common::errors::Unavailable(
+            "Expected either ALLOCATOR_MAPPED_EXCLUSIVE or "
+            "ALLOCATOR_MAPPED_NOCREATE"));
+      }
+
+      if (handle_ == nullptr) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "Couldn't open shared file mapping: <%s>.", eventname));
+      }
+
+      base_ptr_ = MapViewOfFile(handle_, FILE_MAP_ALL_ACCESS, 0, 0, size);
+      if (!base_ptr_) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "Couldn't map view of shared file <%s>.", eventname));
+      }
+
+    } else {
+      HANDLE hfile;
+      HANDLE hmfile;
+      LARGE_INTEGER hfilesz;
+
+      if (flags_ & ALLOCATOR_MAPPED_EXCLUSIVE) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "exclusive file mapping is not supported on Windows"));
+      }
+      if (flags_ & ALLOCATOR_MAPPED_NOCREATE) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "file mapping without creation is not supported on Windows"));
+      }
+      if (flags_ & ALLOCATOR_MAPPED_KEEPFD) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "ALLOCATOR_MAPPED_KEEPFD not supported on Windows"));
+      }
+      if (flags_ & ALLOCATOR_MAPPED_FROMFD) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "ALLOCATOR_MAPPED_FROMFD not supported on Windows"));
+      }
+
+      // Shadowing
+      const wchar_t *filename;
+      std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+      const std::wstring wFilename = converter.from_bytes(filename_);
+
+      filename = wFilename.c_str();
+
+      /* open file */
+      /* FILE_FLAG_RANDOM_ACCESS ? */
+      if (flags_) {
+        hfile = CreateFileW(filename,
+                            GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_WRITE | FILE_SHARE_READ,
+                            0,
+                            OPEN_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL,
+                            0);
+        if (hfile == INVALID_HANDLE_VALUE) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not open file <%s> in read-write mode;", filename_));
+        }
+      } else {
+        hfile = CreateFileW(filename,
+                            GENERIC_READ,
+                            FILE_SHARE_WRITE | FILE_SHARE_READ,
+                            0,
+                            OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL,
+                            0);
+        if (hfile == INVALID_HANDLE_VALUE) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not open file <%s> in read-only mode;", filename_));
+        }
+      }
+
+      if (GetFileSizeEx(hfile, &hfilesz) == 0) {
+        PADDLE_THROW(common::errors::Unavailable(
+            "could not get file size: <%s>;", filename_));
+      }
+
+      if (size > 0) {
+        if (size > hfilesz.QuadPart) {
+          if (flags_) {
+            hfilesz.QuadPart = size;
+            if (SetFilePointerEx(hfile, hfilesz, NULL, FILE_BEGIN) == 0) {
+              CloseHandle(hfile);
+              PADDLE_THROW(common::errors::Unavailable(
+                  "unable to stretch file : <%s> to the right size;",
+                  filename_));
+            }
+            if (SetEndOfFile(hfile) == 0) {
+              CloseHandle(hfile);
+              PADDLE_THROW(common::errors::Unavailable(
+                  "unable to write to file : <%s>", filename_));
+            }
+          } else {
+            CloseHandle(hfile);
+            PADDLE_THROW(common::errors::Unavailable(
+                "file: <%s> size <%d> is smaller than the required mapping "
+                "size <%d>",
+                filename_,
+                hfilesz.QuadPart,
+                size));
+          }
+        }
+      } else {
+        size = hfilesz.QuadPart;
+      }
+      /* if we are here, it must be the right size */
+
+      hfilesz.QuadPart = size;
+
+      /* get map handle */
+      if (flags_) {
+        if ((hmfile = CreateFileMappingW(hfile,
+                                         NULL,
+                                         PAGE_READWRITE,
+                                         hfilesz.HighPart,
+                                         hfilesz.LowPart,
+                                         NULL)) == NULL) {
+          CloseHandle(hfile);
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not create a map on file <%s>", filename_));
+        }
+      } else {
+        if ((hmfile = CreateFileMappingW(hfile,
+                                         NULL,
+                                         PAGE_WRITECOPY,
+                                         hfilesz.HighPart,
+                                         hfilesz.LowPart,
+                                         NULL)) == NULL) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not create a map on file <%s>", filename_));
+        }
+      }
+
+      /* map the stuff */
+      if (flags_) {
+        base_ptr_ = MapViewOfFile(hmfile, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+      } else {
+        base_ptr_ = MapViewOfFile(hmfile, FILE_MAP_COPY, 0, 0, 0);
+      }
+
+      CloseHandle(hfile);
+      CloseHandle(hmfile);
+    }
+
+#else
+    // open file
+    // OK, now do the allocation
+    int fd{-1};
+    int flags{0};  // shadow
+    if (flags_ & (ALLOCATOR_MAPPED_SHARED | ALLOCATOR_MAPPED_SHAREDMEM)) {
+      flags = O_RDWR | O_CREAT;
+    } else {
+      flags = O_RDONLY;
+    }
+
+    if (flags_ & ALLOCATOR_MAPPED_EXCLUSIVE) {
+      flags |= O_EXCL;
+    }
+    if (flags_ & ALLOCATOR_MAPPED_NOCREATE) {
+      flags &= ~O_CREAT;
+    }
+
+    if (!(flags_ & ALLOCATOR_MAPPED_FROMFD)) {
+      if (flags_ & ALLOCATOR_MAPPED_SHARED) {
+        if ((fd = open(filename_.c_str(), flags, (mode_t)0600)) == -1) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "unable to open file <%s> in read-write mode.", filename_));
+        }
+      } else if (flags_ & ALLOCATOR_MAPPED_SHAREDMEM) {
+#ifdef HAVE_SHM_OPEN
+        if ((fd = shm_open(filename_.c_str(), flags, (mode_t)0600)) == -1) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "unable to open shared memory file <%s> in read-write mode.",
+              filename_));
+        }
+#else
+        PADDLE_THROW(common::errors::Unavailable(
+            "unable to open file <%s> in sharedmem mode, shm_open unavailable "
+            "on this platform.",
+            filename_));
+#endif
+      } else {
+        if ((fd = open(filename_.c_str(), O_RDONLY)) == -1) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "unable to open file <%s> in read-only mode.", filename_));
+        }
+      }
+    }
+    PADDLE_ENFORCE_GE(fd, 0, common::errors::Unavailable("open file filed."));
+    struct stat file_stat {};
+    if (fstat(fd, &file_stat) == -1) {
+      if (!(flags_ & ALLOCATOR_MAPPED_FROMFD)) {
+        ::close(fd);
+      }
+      PADDLE_THROW(common::errors::Unavailable("unable to stat the file <%s>",
+                                               filename_));
+    }
+
+    if (size > 0) {
+      if (static_cast<int64_t>(size) > file_stat.st_size) {
+        if (flags_) {
+          if (ftruncate(fd, static_cast<off_t>(size)) == -1) {
+            PADDLE_THROW(common::errors::Unavailable(
+                "unable to resize file <%s> to the right size", filename_));
+          }
+          if (fstat(fd, &file_stat) == -1 ||
+              file_stat.st_size < static_cast<int64_t>(size)) {
+            ::close(fd);
+            PADDLE_THROW(common::errors::Unavailable(
+                "unable to stretch file <%s> to the right size", filename_));
+          }
+        } else {
+          ::close(fd);
+          PADDLE_THROW(common::errors::Unavailable(
+              "file <%s> size <%d> is smaller than the required mapping size "
+              "<%d>",
+              filename_,
+              file_stat.st_size,
+              size));
+        }
+      }
+    } else {
+      size = file_stat.st_size;
+    }
+    ptrdiff_t size_ = static_cast<ptrdiff_t>(
+        size);  // if we are here, it must be the right size
+
+    // map it
+    if (flags_ & (ALLOCATOR_MAPPED_SHARED | ALLOCATOR_MAPPED_SHAREDMEM)) {
+      base_ptr_ =
+          mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    } else {
+      base_ptr_ =
+          mmap(nullptr, size_, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    }
+
+    if (base_ptr_ == MAP_FAILED) {
+      base_ptr_ = nullptr;  // let's be sure it is NULL
+      PADDLE_THROW(common::errors::Unavailable(
+          "unable to mmap %d bytes from file <%s>", size, filename_));
+    }
+
+    if (::close(fd) == -1) {
+      PADDLE_THROW(
+          common::errors::Unavailable("Error closing file <%s>", filename_));
+    }
+
+    if (flags_ & ALLOCATOR_MAPPED_UNLINK) {
+      if (flags_ & ALLOCATOR_MAPPED_SHAREDMEM) {
+#ifdef HAVE_SHM_UNLINK
+        if (shm_unlink(filename_.c_str()) == -1) {
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not unlink the shared memory file <%s>", filename_));
+        }
+#else
+        PADDLE_THROW(common::errors::Unavailable(
+            "could not unlink the shared memory file <%s>, shm_unlink not "
+            "available on platform",
+            filename_));
+#endif
+      } else {
+        if (unlink(filename_.c_str()) == -1)
+          PADDLE_THROW(common::errors::Unavailable(
+              "could not unlink file  <%s>", filename_));
+      }
+    }
+
+    if (base_ptr_ == MAP_FAILED) {
+      PADDLE_THROW(common::errors::Unavailable(
+          "unable to mmap memory: you tried to mmap %d bytes",
+          size_ / 1073741824));
+    }
+#endif
+  }
+  ~MmapStorage() {
+    if (base_ptr_) {
+#if defined(WIN32) || defined(_WIN32) || defined(WIN64) || defined(_WIN6)
+      UnmapViewOfFile(base_ptr_);
+#else
+      munmap(base_ptr_, size);
+#endif
+      base_ptr_ = nullptr;
+    }
+  }
+  void *base_ptr_;
+  int64_t size;
 };
 
 static std::vector<std::vector<pir::Value>> GenerateBackwardBlockForPyLayerOp(
@@ -1095,7 +1568,9 @@ PYBIND11_MODULE(libpaddle, m) {
   BindJit(&m);
   BindSot(&m);
   BindCustomDevicePy(&m);
+  BindNativeMetaTensor(&m);
   BindEagerUtils(m.ptr());
+  BindOpFunctionCommon(m.ptr());
 
   // Not used, just make sure cpu_info.cc is linked.
   phi::backends::cpu::CpuTotalPhysicalMemory();
@@ -1112,8 +1587,26 @@ PYBIND11_MODULE(libpaddle, m) {
 
   BindException(&m);
 
+#define SET_STR_DEFINE(name) m.attr("_" #name) = std::string(name);
+
+#ifdef PYBIND11_COMPILER_TYPE
+  SET_STR_DEFINE(PYBIND11_COMPILER_TYPE);
+#endif
+#ifdef PYBIND11_STDLIB
+  SET_STR_DEFINE(PYBIND11_STDLIB);
+#endif
+#ifdef PYBIND11_BUILD_ABI
+  SET_STR_DEFINE(PYBIND11_BUILD_ABI);
+#endif
+
+#ifdef _GLIBCXX_USE_CXX11_ABI
+  m.attr("_GLIBCXX_USE_CXX11_ABI") = true;
+#else
+  m.attr("_GLIBCXX_USE_CXX11_ABI") = false;
+#endif
+
   py::class_<iinfo>(m, "iinfo")
-      .def(py::init<const framework::proto::VarType::Type &>())
+      .def(py::init<const phi::DataType &>())
       .def_readonly("min", &iinfo::min)
       .def_readonly("max", &iinfo::max)
       .def_readonly("bits", &iinfo::bits)
@@ -1128,7 +1621,7 @@ PYBIND11_MODULE(libpaddle, m) {
       });
 
   py::class_<finfo>(m, "finfo")
-      .def(py::init<const framework::proto::VarType::Type &>())
+      .def(py::init<const phi::DataType &>())
       .def_readonly("min", &finfo::min)
       .def_readonly("max", &finfo::max)
       .def_readonly("bits", &finfo::bits)
@@ -1203,6 +1696,21 @@ PYBIND11_MODULE(libpaddle, m) {
           }
         });
 
+  m.def("_ipc_collect", []() {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_XPU)
+#if defined(_WIN32)
+    PADDLE_THROW(common::errors::Unavailable(
+        "ipc_collect is not supported on Windows (CUDA/XPU IPC)."));
+#else
+      paddle::memory::allocation::IpcCollect();
+#endif
+#else
+      PADDLE_THROW(common::errors::Unavailable(
+        "Paddle is not compiled with CUDA/XPU, "
+        "so `ipc_collect` cannot be used."));
+#endif
+  });
+
   class NodePostHookRemoveHelper {
    public:
     NodePostHookRemoveHelper(std::shared_ptr<egr::GradNodeBase> node,
@@ -1267,16 +1775,26 @@ PYBIND11_MODULE(libpaddle, m) {
 #endif
 
   m.def("is_cuda_graph_capturing", &platform::IsCUDAGraphCapturing);
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
   py::class_<phi::backends::gpu::CUDAGraph>(m, "CUDAGraph")
       .def_static("begin_capture",
-                  [](phi::GPUPlace place, int mode) {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+                  [](GPUPlace place, int mode) {
                     platform::BeginCUDAGraphCapture(
                         place, static_cast<paddle::gpuStreamCaptureMode>(mode));
-                  })
+                  }
+#else
+          [](phi::CustomPlace place, int mode) {
+            platform::BeginCUDAGraphCapture(
+                place, static_cast<phi::graph::streamCaptureMode>(mode));
+          }
+#endif
+                  )
       .def_static(
           "begin_capture_with_pool_id",
-          [](phi::GPUPlace place, int mode, std::optional<int64_t> pool_id) {
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+          [](GPUPlace place, int mode, std::optional<int64_t> pool_id) {
             if (pool_id.has_value()) {
               platform::BeginCUDAGraphCapture(
                   place,
@@ -1286,7 +1804,21 @@ PYBIND11_MODULE(libpaddle, m) {
               platform::BeginCUDAGraphCapture(
                   place, static_cast<paddle::gpuStreamCaptureMode>(mode));
             }
-          })
+          }
+#else
+          [](phi::CustomPlace place, int mode, std::optional<int64_t> pool_id) {
+            if (pool_id.has_value()) {
+              platform::BeginCUDAGraphCapture(
+                  place,
+                  static_cast<phi::graph::streamCaptureMode>(mode),
+                  pool_id.value());
+            } else {
+              platform::BeginCUDAGraphCapture(
+                  place, static_cast<phi::graph::streamCaptureMode>(mode));
+            }
+          }
+#endif
+          )
       .def_static("end_capture", &platform::EndCUDAGraphCapture)
       .def_static("gen_new_memory_pool_id",
                   &phi::backends::gpu::CUDAGraph::UniqueMemoryPoolID)
@@ -1299,24 +1831,166 @@ PYBIND11_MODULE(libpaddle, m) {
   m.def("wait_device", [](const phi::Place &place) {
     phi::DeviceContextPool::Instance().Get(place)->Wait();
   });
+  py::class_<MmapStorage, std::shared_ptr<MmapStorage>>(
+      m, "MmapStorage")  // class attr: base_ptr_, size_
+      .def(py::init<const std::string &, int64_t>())  // filename_, nbytes
+      .def("get_slice",
+           [](py::object self_obj,
+              proto::VarType::Type dtype,
+              int64_t start,
+              int64_t stop,
+              int64_t step) {
+             auto self_sp = py::cast<std::shared_ptr<MmapStorage>>(self_obj);
+             MmapStorage &self = *self_sp;
+             if (stop < 0) {
+               stop = start + 1;  // default: get the start element.
+             }
+             Py_ssize_t size_py = static_cast<Py_ssize_t>(self.size);
+             Py_ssize_t start_py = static_cast<Py_ssize_t>(start);
+             Py_ssize_t stop_py = static_cast<Py_ssize_t>(stop);
+             Py_ssize_t step_py = static_cast<Py_ssize_t>(step);
+             Py_ssize_t slicelength =
+                 PySlice_AdjustIndices(size_py, &start_py, &stop_py, step_py);
+             auto data = static_cast<uint8_t *>(self.base_ptr_) + start;
+             auto dtype_phi = phi::TransToPhiDataType(dtype);
+             return from_blob(
+                 reinterpret_cast<void *>(data),
+                 phi::IntArray({slicelength}),
+                 dtype_phi,
+                 phi::DataLayout::NCHW,
+                 CPUPlace(),
+                 [self_sp = std::move(self_sp)](
+                     void *) mutable {  // NOLINT(readability/casting)
+                   pybind11::gil_scoped_acquire gil;
+                   self_sp.reset();
+                 });
+           });
+  m.def(
+      "frombuffer",
+      [](py::object buffer,
+         phi::DataType dtype,
+         int64_t count,
+         int64_t offset) {
+        int64_t actual_count = 0;
+        auto elsize = phi::SizeOf(dtype);
+        Py_buffer view;
+        if (PyObject_GetBuffer(buffer.ptr(), &view, PyBUF_WRITABLE) < 0) {
+          PADDLE_ENFORCE_EQ(
+              PyObject_GetBuffer(buffer.ptr(), &view, PyBUF_SIMPLE) >= 0,
+              true,
+              common::errors::InvalidArgument(
+                  "could not retrieve buffer from object"));
+          PyErr_Clear();
+        }
+        Py_INCREF(view.obj);
+        std::unique_ptr<PyObject> obj(view.obj);
+        auto len = view.len;
+        auto buf = view.buf;
+        PyBuffer_Release(&view);
+        PADDLE_ENFORCE_EQ(
+            len > 0 && count != 0,
+            true,
+            common::errors::InvalidArgument(
+                "both buffer length and count must be greater than 0"));
+        PADDLE_ENFORCE_EQ(
+            offset >= 0 && offset < len,
+            true,
+            common::errors::InvalidArgument("offset must be non-negative and "
+                                            "no greater than buffer length"));
+        PADDLE_ENFORCE_EQ(
+            count > 0 || (len - offset) % elsize == 0,
+            true,
+            common::errors::InvalidArgument("buffer length after offset must "
+                                            "be a multiple of element size"));
+        if (count < 0) {
+          actual_count = static_cast<int64_t>(len - offset) / elsize;
+        } else {
+          actual_count = static_cast<int64_t>(count);
+        }
+
+        PADDLE_ENFORCE_LE(static_cast<int64_t>(offset) + actual_count * elsize,
+                          static_cast<int64_t>(len),
+                          common::errors::InvalidArgument(
+                              "requested buffer length after offset must not "
+                              "be greater than actual buffer length"));
+
+        auto offset_buf = static_cast<char *>(buf) + offset;
+        return from_blob(offset_buf,
+                         phi::IntArray({actual_count}),
+                         dtype,
+                         phi::DataLayout::NCHW,
+                         CPUPlace(),
+                         [obj = obj.release()](void *) {
+                           pybind11::gil_scoped_acquire gil;
+                           Py_DECREF(obj);
+                         });
+      },
+      py::arg("buffer"),
+      py::arg("dtype"),
+      py::arg("count") = -1,
+      py::arg("offset") = 0);
+
+  m.def("place_to_dl_device", [](const phi::Place &place) {
+    ::DLDevice dl_device = PlaceToDLDevice(place);
+    return py::make_tuple(static_cast<int>(dl_device.device_type),
+                          dl_device.device_id);
+  });
+
+  m.def("dlpack_exchange_api_ptr", []() -> int64_t {
+    return reinterpret_cast<int64_t>(PaddleDLPackExchangeAPI::Instance());
+  });
+
+  m.def("dlpack_exchange_api_pycapsule", []() -> py::capsule {
+    return py::capsule(PaddleDLPackExchangeAPI::Instance(),
+                       "dlpack_exchange_api");
+  });
 
   m.def("from_dlpack", [](py::object data) {
-    DLManagedTensor *dlMTensor = reinterpret_cast<DLManagedTensor *>(
-        PyCapsule_GetPointer(data.ptr(), "dltensor"));
+    if (PyCapsule_IsValid(data.ptr(),
+                          DLPackTraits<DLManagedTensorVersioned>::capsule)) {
+      DLManagedTensorVersioned *dlMTensor =
+          reinterpret_cast<DLManagedTensorVersioned *>(PyCapsule_GetPointer(
+              data.ptr(), DLPackTraits<DLManagedTensorVersioned>::capsule));
+      PADDLE_ENFORCE_NOT_NULL(
+          dlMTensor,
+          common::errors::InvalidArgument(
+              "from_dlpack received an invalid capsule. "
+              "Note that DLTensor capsules can be consumed only once, "
+              "so you might have already constructed a tensor from it once."));
+      PADDLE_ENFORCE_LE(
+          dlMTensor->version.major,
+          DLPACK_MAJOR_VERSION,
+          common::errors::InvalidArgument(
+              "The major version of DLManagedTensorVersioned (%d) is "
+              "greater than the supported version (%d).",
+              dlMTensor->version.major,
+              DLPACK_MAJOR_VERSION));
 
-    PADDLE_ENFORCE_NOT_NULL(
-        dlMTensor,
-        common::errors::InvalidArgument(
-            "from_dlpack received an invalid capsule. "
-            "Note that DLTensor capsules can be consumed only once, "
-            "so you might have already constructed a tensor from it once."));
+      // NOTE: Might meet bugged numpy version, see:
+      // https://github.com/pytorch/pytorch/blob/main/torch/csrc/utils/tensor_new.cpp#L1636-L1638
+      auto ptensor =
+          DLPackTraits<DLManagedTensorVersioned>::FromDLPack(dlMTensor);
 
-    // NOTE: Might meet bugged numpy version, see:
-    // https://github.com/pytorch/pytorch/blob/main/torch/csrc/utils/tensor_new.cpp#L1636-L1638
-    auto ptensor = paddle::framework::TensorFromDLPack(dlMTensor);
+      PyCapsule_SetName(data.ptr(),
+                        DLPackTraits<DLManagedTensorVersioned>::used);
+      return ptensor;
+    } else {
+      DLManagedTensor *dlMTensor =
+          reinterpret_cast<DLManagedTensor *>(PyCapsule_GetPointer(
+              data.ptr(), DLPackTraits<DLManagedTensor>::capsule));
 
-    PyCapsule_SetName(data.ptr(), "used_dltensor");
-    return ptensor;
+      PADDLE_ENFORCE_NOT_NULL(
+          dlMTensor,
+          common::errors::InvalidArgument(
+              "from_dlpack received an invalid capsule. "
+              "Note that DLTensor capsules can be consumed only once, "
+              "so you might have already constructed a tensor from it once."));
+
+      auto ptensor = DLPackTraits<DLManagedTensor>::FromDLPack(dlMTensor);
+
+      PyCapsule_SetName(data.ptr(), DLPackTraits<DLManagedTensor>::used);
+      return ptensor;
+    }
   });
 
   m.def("tensor_from_cuda_array_interface", [](py::object obj) {
@@ -2074,7 +2748,7 @@ All parameter, weight, gradient are variables in Paddle.
 
   py::class_<phi::DeviceContext>(m, "DeviceContext")
       .def_static("create",
-                  [](phi::CPUPlace &place) -> phi::DeviceContext * {
+                  [](CPUPlace &place) -> phi::DeviceContext * {
                     auto *context = new phi::CPUContext();
                     context->SetAllocator(
                         paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2082,7 +2756,7 @@ All parameter, weight, gradient are variables in Paddle.
                             .get());
                     context->SetHostAllocator(
                         paddle::memory::allocation::AllocatorFacade::Instance()
-                            .GetAllocator(phi::CPUPlace())
+                            .GetAllocator(CPUPlace())
                             .get());
                     context->SetZeroAllocator(
                         paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2090,7 +2764,7 @@ All parameter, weight, gradient are variables in Paddle.
                             .get());
                     context->SetHostZeroAllocator(
                         paddle::memory::allocation::AllocatorFacade::Instance()
-                            .GetZeroAllocator(phi::CPUPlace())
+                            .GetZeroAllocator(CPUPlace())
                             .get());
                     return context;
                   })
@@ -2109,7 +2783,7 @@ All parameter, weight, gradient are variables in Paddle.
                     .get());
             context->SetHostAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
-                    .GetAllocator(phi::CPUPlace())
+                    .GetAllocator(CPUPlace())
                     .get());
             context->SetZeroAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2117,7 +2791,7 @@ All parameter, weight, gradient are variables in Paddle.
                     .get());
             context->SetHostZeroAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
-                    .GetZeroAllocator(phi::CPUPlace())
+                    .GetZeroAllocator(CPUPlace())
                     .get());
             context->SetPinnedAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2150,7 +2824,7 @@ All parameter, weight, gradient are variables in Paddle.
                   })
       .def_static(
           "create",
-          [](phi::GPUPlace &place) -> phi::DeviceContext * {
+          [](GPUPlace &place) -> phi::DeviceContext * {
 #if !defined(PADDLE_WITH_CUDA) && !defined(PADDLE_WITH_HIP)
             PADDLE_THROW(common::errors::PermissionDenied(
                 "Cannot use CUDAPlace in CPU only version, "
@@ -2163,7 +2837,7 @@ All parameter, weight, gradient are variables in Paddle.
                     .get());
             context->SetHostAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
-                    .GetAllocator(phi::CPUPlace())
+                    .GetAllocator(CPUPlace())
                     .get());
             context->SetZeroAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2171,7 +2845,7 @@ All parameter, weight, gradient are variables in Paddle.
                     .get());
             context->SetHostZeroAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
-                    .GetZeroAllocator(phi::CPUPlace())
+                    .GetZeroAllocator(CPUPlace())
                     .get());
             context->SetPinnedAllocator(
                 paddle::memory::allocation::AllocatorFacade::Instance()
@@ -2198,12 +2872,16 @@ All parameter, weight, gradient are variables in Paddle.
     std::vector<std::string> device_types;
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
     device_types = phi::DeviceManager::GetAllDeviceTypes();
+#elif defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+    device_types.push_back("gpu");
+#elif defined(PADDLE_WITH_XPU)
+    device_types.push_back("xpu");
 #else
           VLOG(1) << string::Sprintf(
               "Cannot use get_all_device_type because you have installed "
-              "CPU/GPU version PaddlePaddle.\n"
-              "If you want to use get_all_device_type, please try to install"
-              "CustomDevice version "
+              "CPU version PaddlePaddle.\n"
+              "If you want to use get_all_device_type, please try to install "
+              "CUDA/XPU/CustomDevice version "
               "PaddlePaddle by: pip install paddlepaddle\n");
 #endif
     return device_types;
@@ -2226,12 +2904,22 @@ All parameter, weight, gradient are variables in Paddle.
     std::vector<std::string> devices;
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
     devices = phi::DeviceManager::GetAllDeviceList();
+#elif defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+    int gpu_count = phi::backends::gpu::GetGPUDeviceCount();
+    for (int i = 0; i < gpu_count; ++i) {
+      devices.push_back("gpu:" + std::to_string(i));
+    }
+#elif defined(PADDLE_WITH_XPU)
+    int xpu_count = phi::backends::xpu::GetXPUDeviceCount();
+    for (int i = 0; i < xpu_count; ++i) {
+      devices.push_back("xpu:" + std::to_string(i));
+    }
 #else
           VLOG(1) << string::Sprintf(
               "Cannot use get_available_device because you have installed "
-              "CPU/GPU version PaddlePaddle.\n"
-              "If you want to use get_available_device, please try to install"
-              "CustomDevice version "
+              "CPU version PaddlePaddle.\n"
+              "If you want to use get_available_device, please try to install "
+              "CUDA/XPU/CustomDevice version "
               "PaddlePaddle by: pip install paddlepaddle\n");
 #endif
     return devices;
@@ -2245,7 +2933,7 @@ All parameter, weight, gradient are variables in Paddle.
               "Cannot use get_available_custom_device because you have "
               "installed CPU/GPU version PaddlePaddle.\n"
               "If you want to use get_available_custom_device, please try to "
-              "install"
+              "install "
               "CustomDevice version "
               "PaddlePaddle by: pip install paddlepaddle\n");
 #endif
@@ -2263,7 +2951,7 @@ All parameter, weight, gradient are variables in Paddle.
               "Cannot use get_custom_device_count because you have "
               "installed CPU/GPU version PaddlePaddle.\n"
               "If you want to use get_custom_device_count, please try to "
-              "install"
+              "install "
               "CustomDevice version "
               "PaddlePaddle by: pip install paddlepaddle\n");
 #endif
@@ -2287,9 +2975,7 @@ All parameter, weight, gradient are variables in Paddle.
                     return OpRegistry::CreateOp(desc);
                   })
       .def("run",
-           [](OperatorBase &self,
-              const Scope &scope,
-              const phi::CPUPlace &place) {
+           [](OperatorBase &self, const Scope &scope, const CPUPlace &place) {
              pybind11::gil_scoped_release release;
              self.Run(scope, place);
            })
@@ -2301,9 +2987,7 @@ All parameter, weight, gradient are variables in Paddle.
              self.Run(scope, place);
            })
       .def("run",
-           [](OperatorBase &self,
-              const Scope &scope,
-              const phi::GPUPlace &place) {
+           [](OperatorBase &self, const Scope &scope, const GPUPlace &place) {
              pybind11::gil_scoped_release release;
              self.Run(scope, place);
            })
@@ -2510,7 +3194,7 @@ All parameter, weight, gradient are variables in Paddle.
         framework::interpreter::GetNoNeedBufferValues);
 #ifdef PADDLE_WITH_CUDA
   py::class_<phi::GPUEventTimer>(m, "GPUEventTimer")
-      .def(py::init<phi::GPUPlace>(), py::arg("place"))
+      .def(py::init<GPUPlace>(), py::arg("place"))
       .def(
           "start",
           [](phi::GPUEventTimer &timer, phi::CUDAStream *stream) {
@@ -2575,8 +3259,16 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("init_glog", framework::InitGLOG);
   m.def("init_memory_method", framework::InitMemoryMethod);
   m.def("load_op_meta_info_and_register_op", [](const std::string dso_name) {
-    egr::Controller::Instance().MergeOpMetaInfoMap(
-        framework::LoadOpMetaInfoAndRegisterOp(dso_name));
+    const auto &new_op_meta_info_map =
+        framework::LoadOpMetaInfoAndRegisterOp(dso_name);
+    // Merging failed?
+    egr::Controller::Instance().MergeOpMetaInfoMap(new_op_meta_info_map);
+
+    py::list key_list;
+    for (const auto &pair : new_op_meta_info_map) {
+      key_list.append(pair.first);
+    }
+    return key_list;
   });
   m.def("init_devices", []() { framework::InitDevices(); });
   m.def("init_default_kernel_signatures",
@@ -2588,7 +3280,7 @@ All parameter, weight, gradient are variables in Paddle.
         std::make_unique<paddle::prim::StaticTensorOperants>();
     paddle::OperantsManager::Instance().phi_operants =
         std::make_unique<paddle::operants::PhiTensorOperants>();
-    VLOG(4) << "Initialize tensor operants successfully";
+    VLOG(7) << "Initialize tensor operants successfully";
   });
   m.def("is_compiled_with_flagcx", IsCompiledWithFlagcx);
   m.def("is_compiled_with_deepep", IsCompiledWithDeepEP);
@@ -2599,7 +3291,8 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("is_compiled_with_custom_device", IsCompiledWithCustomDevice);
   m.def("is_compiled_with_ipu", IsCompiledWithIPU);
   m.def("is_compiled_with_xpu", IsCompiledWithXPU);
-  m.def("is_compiled_with_mkldnn", IsCompiledWithMKLDNN);
+  m.def("is_compiled_with_mkldnn", IsCompiledWithONEDNN);  // deprecated
+  m.def("is_compiled_with_onednn", IsCompiledWithONEDNN);
   m.def("is_compiled_with_nccl", IsCompiledWithNCCL);
   m.def("is_compiled_with_mpi", IsCompiledWithMPI);
   m.def("is_compiled_with_mpi_aware", IsCompiledWithMPIAWARE);
@@ -2614,7 +3307,7 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("op_supported_infos", imperative::OpSupportedInfos);
   m.def("is_compiled_with_brpc", IsCompiledWithBrpc);
   m.def("is_compiled_with_dist", IsCompiledWithDIST);
-  m.def("_cuda_synchronize", [](const phi::GPUPlace &place) {
+  m.def("_cuda_synchronize", [](const GPUPlace &place) {
     phi::DeviceContextPool::Instance().Get(place)->Wait();
   });
   m.def("_set_warmup", [](bool warmup) {
@@ -2686,6 +3379,60 @@ All parameter, weight, gradient are variables in Paddle.
             Scope *,
             const phi::DenseTensor &,
             const std::string &)>(&framework::SetVariable));
+  m.def(
+      "set_vlog_level",
+      [](py::object module_levels) {
+        if (py::isinstance<py::int_>(module_levels)) {
+          auto level = module_levels.cast<int>();
+          // Do not using google::SetVLOGLevel("*", level);
+          // It may cause configuration effects for a single module
+          VLOG(3) << "Set the VLOG level of all modules to " << level;
+          FLAGS_v = level;
+          phi::set_phi_vlog_level(level);
+        } else if (py::isinstance<py::dict>(module_levels)) {
+          auto module_levels_dict = module_levels.cast<py::dict>();
+          for (auto &item : module_levels_dict) {
+            auto module_name = item.first.cast<std::string>();
+            auto level = item.second.cast<int>();
+            if (module_name == "*") {
+              VLOG(3) << "Set the VLOG level of all modules to " << level;
+              FLAGS_v = level;
+              phi::set_phi_vlog_level(level);
+            } else {
+              google::SetVLOGLevel(module_name.c_str(), level);
+              phi::set_phi_vlog_level(module_name.c_str(), level);
+            }
+          }
+        } else {
+          PADDLE_THROW(common::errors::InvalidArgument(
+              "The parameters of set_vlog_level must be int or dict! "));
+        }
+      },
+      py::arg("module_levels"),
+      R"DOC(
+    Set the verbosity logging level for specified modules.
+
+    This function allows setting the VLOG level for specific modules or for all modules.
+    The VLOG level controls the verbosity of logging output, with higher levels producing more
+    detailed logs.
+
+    Parameters:
+      module_levels (dict|int): A dictionary where the keys are module names (str) and
+                                the values are the corresponding verbosity levels (int),
+                                or an int variable that represents the verbosity level set globally for all modules.
+
+    Example:
+        .. code-block:: python
+
+            >>> import paddle
+            >>> # case1: Set GLOG_v=1
+            >>> paddle.base.core.set_vlog_level(1)
+            >>> # case2: Another way to set GLOG_v=1
+            >>> paddle.base.core.set_vlog_level({"*": 1})
+            >>> # case3: Set GLOG_vmodule=dygraph_functions=4,nodes=5
+            >>> paddle.base.core.set_vlog_level({"dygraph_functions": 4, "nodes": 5})
+
+)DOC");
   m.def("set_feed_variable",
         static_cast<void (*)(  // NOLINT
             Scope *,
@@ -2707,14 +3454,30 @@ All parameter, weight, gradient are variables in Paddle.
 
   m.def("_is_program_version_supported", IsProgramVersionSupported);
 #if defined(PADDLE_WITH_CUDA)
-  m.def("allocator_dump", [](const phi::GPUPlace &place) {
+  m.def("allocator_dump", [](const GPUPlace &place) {
     auto allocator = std::dynamic_pointer_cast<
         paddle::memory::allocation::AutoGrowthBestFitAllocator>(
         paddle::memory::allocation::AllocatorFacade::Instance()
             .GetAutoGrowthAllocator(place));
     allocator->DumpInfo();
   });
+
+  m.def("set_skip_offload_callback_tensors",
+        [](const std::vector<paddle::Tensor> &tensors) {
+          egr::ActivationOffloader::Instance()->SetSkipTensors(tensors);
+        });
+  m.def("register_offload_callback", [] {
+    paddle::memory::allocation::RegisterOOMCallback(
+        [](phi::Place place, size_t size) -> size_t {
+          return egr::ActivationOffloader::Instance()->Offload(place, size);
+        });
+  });
+  m.def("clear_offload_callback",
+        [] { paddle::memory::allocation::RegisterOOMCallback(nullptr); });
+  m.def("offload_cached_size",
+        [] { return egr::ActivationOffloader::Instance()->CachedSize(); });
 #endif
+
   BindProgramDesc(&m);
   BindBlockDesc(&m);
   BindVarDesc(&m);
@@ -2884,7 +3647,7 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("cuda_empty_cache", [] {
     for (int dev_id : platform::GetSelectedDevices()) {
       auto *dev_ctx =
-          phi::DeviceContextPool::Instance().GetByPlace(phi::GPUPlace(dev_id));
+          phi::DeviceContextPool::Instance().GetByPlace(GPUPlace(dev_id));
       dev_ctx->cudnn_workspace_handle().ResetWorkspace();
     }
     platform::EmptyCache();
@@ -2894,7 +3657,7 @@ All parameter, weight, gradient are variables in Paddle.
       [](int id) -> const gpuDeviceProp & {
         return platform::GetDeviceProperties(id);
       },
-      py::return_value_policy::copy);
+      py::return_value_policy::reference);
 
   py::class_<gpuDeviceProp>(m, "_gpuDeviceProperties", py::module_local())
       .def_property_readonly(
@@ -2936,7 +3699,26 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("nvprof_disable_record_event", platform::NvprofDisableRecordEvent);
 #endif
 #endif
-
+#if defined(PADDLE_WITH_CUDA)
+  m.def("vmm_max_free_size", [](int device_id) {
+    return memory::VmmMaxFreeSize(GPUPlace(device_id), 1);
+  });
+  m.def("vmm_compact", [](int device_id) {
+    return paddle::memory::VmmCompact(GPUPlace(device_id));
+  });
+  m.def("vmm_free_block_info", [](int device_id) {
+    return paddle::memory::FreeBlockInfoOfVmmAllocator(GPUPlace(device_id));
+  });
+  m.def("vmm_all_block_info", [](int device_id) {
+    return paddle::memory::AllBlockInfoOfVmmAllocator(GPUPlace(device_id));
+  });
+  m.def("get_allocate_record", [](int device_id) {
+    return paddle::memory::GetAllocateEvent(GPUPlace(device_id));
+  });
+  m.def("get_compact_size", [](int device_id) {
+    return paddle::memory::GetCompactSize(GPUPlace(device_id));
+  });
+#endif
 #ifdef PADDLE_WITH_CUSTOM_DEVICE
   m.def(
       "get_device_properties",
@@ -2944,6 +3726,17 @@ All parameter, weight, gradient are variables in Paddle.
         return phi::DeviceManager::GetDeviceProperties(dev_type, id);
       },
       py::return_value_policy::copy);
+
+  m.def("device_empty_cache", [] {
+    std::vector<std::string> dev_types =
+        phi::DeviceManager::GetAllCustomDeviceTypes();
+    std::string dev_type = dev_types[0];
+    std::vector<size_t> devices =
+        phi::DeviceManager::GetSelectedDeviceList(dev_type);
+    for (auto device : devices) {
+      memory::Release(phi::CustomPlace(dev_type, device));
+    }
+  });
 
   py::class_<phi::DeviceProp>(m, "_customDeviceProperties", py::module_local())
       .def_property_readonly(
@@ -2981,11 +3774,54 @@ All parameter, weight, gradient are variables in Paddle.
 
 #ifdef PADDLE_WITH_XPU
   m.def("get_xpu_device_count", platform::GetXPUDeviceCount);
+  m.def("get_xpu_current_device_id", &platform::GetXPUCurrentDeviceId);
   m.def("xpu_empty_cache", platform::EmptyCache);
+  m.def(
+      "get_device_properties",
+      [](int id) -> const gpuDeviceProp & {
+        return platform::GetDeviceProperties(id);
+      },
+      py::return_value_policy::reference);
+
+  py::class_<gpuDeviceProp>(m, "_gpuDeviceProperties", py::module_local())
+      .def_property_readonly(
+          "name", [](const gpuDeviceProp &prop) { return prop.name; })
+      .def_property_readonly(
+          "major", [](const gpuDeviceProp &prop) { return prop.major; })
+      .def_property_readonly(
+          "minor", [](const gpuDeviceProp &prop) { return prop.minor; })
+      .def_property_readonly(
+          "total_memory",
+          [](const gpuDeviceProp &prop) { return prop.totalGlobalMem; })
+      .def_property_readonly(
+          "multi_processor_count",
+          [](const gpuDeviceProp &prop) { return prop.multiProcessorCount; })
+      .def_property_readonly(
+          "is_multi_gpu_board",
+          [](const gpuDeviceProp &prop) { return prop.isMultiGpuBoard; })
+      .def_property_readonly(
+          "is_integrated",
+          [](const gpuDeviceProp &prop) { return prop.integrated; })
+      .def("__repr__", [](const gpuDeviceProp &prop) {
+        std::stringstream ostr;
+        ostr << "_gpuDeviceProperties(name='" << prop.name
+             << "', major=" << prop.major << ", minor=" << prop.minor
+             << ", total_memory=" << prop.totalGlobalMem / (1024 * 1024)
+             << "MB, multi_processor_count=" << prop.multiProcessorCount << ")";
+        return ostr.str();
+      });
   m.def("get_xpu_device_utilization_rate",
         platform::GetXPUDeviceUtilizationRate);
   m.def("get_xpu_device_total_memory", platform::GetXPUDeviceTotalMemory);
   m.def("get_xpu_device_used_memory", platform::GetXPUDeviceUsedMemory);
+  m.def("nvprof_start", platform::CudaProfilerStart);
+  m.def("nvprof_stop", platform::CudaProfilerStop);
+  m.def("nvprof_nvtx_push", [](const std::string &name) {
+    platform::CudaNvtxRangePush(name, platform::NvtxRangeColor::Green);
+  });
+  m.def("nvprof_nvtx_pop", platform::CudaNvtxRangePop);
+  m.def("nvprof_enable_record_event", platform::NvprofEnableRecordEvent);
+  m.def("nvprof_disable_record_event", platform::NvprofDisableRecordEvent);
 #endif
 
   py::enum_<platform::TracerOption>(m, "TracerOption", py::arithmetic())
@@ -3050,12 +3886,12 @@ All parameter, weight, gradient are variables in Paddle.
       .def("save", &paddle::platform::ProfilerResult::Save)
       .def("get_extra_info", &paddle::platform::ProfilerResult::GetExtraInfo)
       .def("get_version", &paddle::platform::ProfilerResult::GetVersion)
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
-      .def("get_span_indx", &paddle::platform::ProfilerResult::GetSpanIndx)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || PADDLE_WITH_XPU
+      .def("get_span_index", &paddle::platform::ProfilerResult::GetSpanIndex)
       .def("get_device_property",
            &paddle::platform::ProfilerResult::GetDeviceProperty);
 #else
-      .def("get_span_indx", &paddle::platform::ProfilerResult::GetSpanIndx);
+      .def("get_span_index", &paddle::platform::ProfilerResult::GetSpanIndex);
 #endif
 
   py::class_<paddle::platform::MemPythonNode>(m, "MemPythonNode")
@@ -3228,7 +4064,8 @@ All parameter, weight, gradient are variables in Paddle.
   m.def("enable_op_info_recorder", &phi::EnableOpInfoRecorder);
   m.def("disable_op_info_recorder", &phi::DisableOpInfoRecorder);
 
-#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+#if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP) || \
+    defined(PADDLE_WITH_CUSTOM_DEVICE)
   m.def("set_cublas_switch", phi::SetAllowTF32Cublas);
   m.def("get_cublas_switch", phi::AllowTF32Cublas);
   m.def("set_cudnn_switch", phi::SetAllowTF32Cudnn);
@@ -3479,6 +4316,7 @@ All parameter, weight, gradient are variables in Paddle.
   BindCompiledProgram(m);
   BindPlace(m);
   BindTensor(m);
+  BindSize(&m);
 
   py::enum_<phi::DataType> data_type(m, "DataType");
   g_data_type_pytype = (PyTypeObject *)data_type.ptr();  // NOLINT
@@ -3502,7 +4340,12 @@ All parameter, weight, gradient are variables in Paddle.
       .value("FLOAT8_E5M2", phi::DataType::FLOAT8_E5M2)
       .value("PSTRING", phi::DataType::PSTRING)
       .value("ALL_DTYPE", phi::DataType::ALL_DTYPE)
-      .export_values();
+      .export_values()
+      .def("__dlpack_data_type__", [](const phi::DataType &self) {
+        ::DLDataType dl_dtype =
+            paddle::framework::PhiDataTypeToDLDataType(self);
+        return py::make_tuple(dl_dtype.code, dl_dtype.bits, dl_dtype.lanes);
+      });
 
   py::class_<paddle::platform::EngineParams> engine_params(m,
                                                            "TRTEngineParams");
@@ -3566,14 +4409,6 @@ All parameter, weight, gradient are variables in Paddle.
   });
 #endif
 
-#if defined(PADDLE_WITH_PSLIB) && !defined(PADDLE_WITH_HETERPS)
-  BindHeterWrapper(&m);
-  BindMetrics(&m);
-#endif
-#ifdef PADDLE_WITH_HETERPS
-  BindPSGPUWrapper(&m);
-  BindAfsWrapper(&m);
-#endif
   BindGlooWrapper(&m);
   BindBoxHelper(&m);
 #ifdef PADDLE_WITH_BOX_PS
@@ -3599,51 +4434,22 @@ All parameter, weight, gradient are variables in Paddle.
   BindCrypto(&m);
 #endif
 
-#if defined PADDLE_WITH_PSCORE
-  BindDistFleetWrapper(&m);
-  BindPSHost(&m);
-  BindCommunicatorContext(&m);
-  BindDistCommunicator(&m);
-  BindHeterClient(&m);
-  BindGraphPyFeatureNode(&m);
-  BindGraphNode(&m);
-  BindGraphPyService(&m);
-  BindGraphPyServer(&m);
-  BindGraphPyClient(&m);
-  BindIndexNode(&m);
-  BindTreeIndex(&m);
-  BindIndexWrapper(&m);
-  BindIndexSampler(&m);
-#ifdef PADDLE_WITH_HETERPS
-  BindNodeQueryResult(&m);
-  BindNeighborSampleQuery(&m);
-  BindNeighborSampleResult(&m);
-  BindGraphGpuWrapper(&m);
-#endif
-#endif
-#if defined(PADDLE_WITH_RPC)
-  BindWorkerInfo(&m);
-  BindFuture(&m);
-  InitAndSetAgentInstance(&m);
-  InvokeRpc(&m);
-  StartWorker(&m);
-  StartClient(&m);
-  StopWorker(&m);
-  GetWorkerInfo(&m);
-  GetWorkerInfoByRank(&m);
-  GetCurrentWorkerInfo(&m);
-  GetAllWorkerInfos(&m);
-#endif
-
   BindPir(&m);
   BindVjp(&m);
   BindDecompRule(&m);
   BindDecompVjp(&m);
+  py::module torch_compat = m.def_submodule(
+      "torch_compat", "Compatibility layer for PyTorch-like APIs");
+  BindTorchCompat(&torch_compat);
 #ifdef PADDLE_WITH_DISTRIBUTE
   BindDistApi(&m);
 #endif
 #if defined(PADDLE_WITH_DISTRIBUTE) && defined(PADDLE_WITH_DEEP_EP)
   BindDeepEPApi(&m);
+#endif
+
+#if defined(PADDLE_WITH_CUDA)
+  BindCudaRt(&m);
 #endif
 }
 }  // namespace paddle::pybind

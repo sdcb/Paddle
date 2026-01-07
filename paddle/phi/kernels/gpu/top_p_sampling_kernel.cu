@@ -18,14 +18,12 @@
 #include <hip/hip_fp16.h>
 #include <hip/hip_runtime.h>
 #include <hiprand_kernel.h>
-#include <hipcub/hipcub.hpp>
-namespace cub = hipcub;
 #else
 #include <cuda_fp16.h>
 #include <curand_kernel.h>
-#include <cub/cub.cuh>
 #endif
 
+#include "paddle/phi/kernels/funcs/cub.h"
 #if defined(__CUDACC__) && CUDA_VERSION >= 11060
 #define CUDA_BFLOAT16_AVAILABLE
 #include <cuda_bf16.h>
@@ -56,13 +54,13 @@ struct DataTypeTraits {
 };
 
 template <>
-struct DataTypeTraits<phi::dtype::float16> {
+struct DataTypeTraits<phi::float16> {
   using DataType = half;
 };
 
 #ifdef CUDA_BFLOAT16_AVAILABLE
 template <>
-struct DataTypeTraits<phi::dtype::bfloat16> {
+struct DataTypeTraits<phi::bfloat16> {
   using DataType = __nv_bfloat16;
 };
 #endif
@@ -670,8 +668,10 @@ __global__ void topp_sampling(T* sorted_probs,
                               int64_t* out_id,
                               const T* top_ps,
                               const T* threshold,
+                              const int64_t* infer_seed,
                               GPU(randState_t) * states,
                               const int p_num,
+                              const uint64_t seed,
                               const int vocab_size,
                               const bool need_batch_random,
                               int* count_iter,
@@ -685,6 +685,16 @@ __global__ void topp_sampling(T* sorted_probs,
   const float p_t = static_cast<float>(top_ps[bid]);
   const float threshold_now =
       threshold ? static_cast<float>(threshold[bid]) : 0.f;
+  uint64_t seed_now;
+  GPU(randState_t) rand_state;
+  const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (infer_seed) {
+    seed_now = static_cast<uint64_t>(infer_seed[bid]);
+    GPU(rand_init)(seed_now, tid, 0, &rand_state);
+  } else {
+    seed_now = seed;
+    GPU(rand_init)(seed_now, global_idx, 0, &rand_state);
+  }
   if (tid == 0) {
     stop_shared = 0;
   }
@@ -726,7 +736,7 @@ __global__ void topp_sampling(T* sorted_probs,
     if (thread_offset < p_t ||
         (thread_offset >= p_t && thread_offset - thread_count < p_t)) {
       float random_ratio =
-          exponential_transform(GPU(rand_uniform)(states + bid), 1.0f);
+          exponential_transform(GPU(rand_uniform)(&rand_state), 1.0f);
       float tmp_val =
           (thread_count >= threshold_now ? thread_count : 0.f) / random_ratio;
       if (static_cast<float>(max_thread_pair.v) < tmp_val) {
@@ -771,13 +781,6 @@ __global__ void topp_sampling(T* sorted_probs,
     }
   }
   __syncthreads();
-  if (stop_shared == 0) {
-    if (tid == 0) {
-      out_id[bid] = sorted_id[offset];
-      out_val[bid] = sorted_probs[offset];
-    }
-    return;
-  }
 
   Pair<T> max_pair = BlockReduce(temp_storage_reduce)
                          .Reduce(max_thread_pair, MaxOp<Pair<T>>());
@@ -973,10 +976,12 @@ void DispatchTopPSampling(const Context& dev_ctx,
                           int64_t* out_id,
                           const T* top_ps,
                           const T* threshold,
+                          const int64_t* infer_seed,
                           GPU(randState_t) * states,
                           const int p_num,
                           const int vocab_size,
                           const int bs,
+                          const uint64_t seed,
                           const bool need_batch_random,
                           int* count_iter,
                           int* count_iter_begin,
@@ -1011,8 +1016,10 @@ void DispatchTopPSampling(const Context& dev_ctx,
                                                    out_id,
                                                    top_ps,
                                                    threshold,
+                                                   infer_seed,
                                                    states,
                                                    p_num,
+                                                   seed,
                                                    vocab_size,
                                                    need_batch_random,
                                                    count_iter,
@@ -1026,7 +1033,9 @@ void DispatchTopPSampling(const Context& dev_ctx,
 __global__ void setup_kernel(GPU(randState_t) * state,
                              int64_t* seed,
                              const int bs) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
   for (int i = idx; i < bs; i += gridDim.x * blockDim.x) {
     GPU(rand_init)(static_cast<uint64_t>(seed[i]), 0, 0, &state[i]);
   }
@@ -1037,7 +1046,9 @@ __global__ void setup_kernel(GPU(randState_t) * state,
                              const uint64_t offset,
                              const int bs,
                              const bool need_batch_random) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t idx =
+      static_cast<int64_t>(blockIdx.x) * static_cast<int64_t>(blockDim.x) +
+      static_cast<int64_t>(threadIdx.x);
   for (int i = idx; i < bs; i += gridDim.x * blockDim.x) {
     if (need_batch_random) {
       GPU(rand_init)(seed, i, offset, &state[i]);
@@ -1068,7 +1079,7 @@ void TopPSamplingKernel(const Context& dev_ctx,
                         const DenseTensor& ps,
                         const paddle::optional<DenseTensor>& threshold,
                         const paddle::optional<DenseTensor>& topp_seed,
-                        int seed,
+                        int64_t seed,
                         int k,
                         const std::string& mode,
                         DenseTensor* out,
@@ -1081,8 +1092,9 @@ void TopPSamplingKernel(const Context& dev_ctx,
   const auto* input = &x;
   // get the input dims
   const auto& in_dims = input->dims();
-  int p_num = ps.numel();
-  int bs = in_dims[0];
+  int64_t p_num = ps.numel();
+  int64_t bs = in_dims[0];
+  // TODO(large-tensor): downstream functors may still use int
   int vocab_size = in_dims[1];
   T* out_ptr = dev_ctx.template Alloc<T>(out);
   int64_t* ids_ptr = dev_ctx.template Alloc<int64_t>(ids);
@@ -1096,7 +1108,7 @@ void TopPSamplingKernel(const Context& dev_ctx,
   DenseTensor ps_now;
   ps_now.Resize(phi::make_ddim({bs, 1}));
   dev_ctx.template Alloc<T>(&ps_now);
-  phi::Copy(dev_ctx, ps, dev_ctx.GetPlace(), false, &ps_now);
+  Copy(dev_ctx, ps, dev_ctx.GetPlace(), false, &ps_now);
 
   DenseTensor inds_input;
   inds_input.Resize(phi::make_ddim({bs, vocab_size}));
@@ -1138,7 +1150,7 @@ void TopPSamplingKernel(const Context& dev_ctx,
     if (seed_now == -1) {
       need_batch_random = true;
       auto gen_cuda = dev_ctx.GetGenerator();
-      uint64_t increment = ps.numel() * 4;
+      uint64_t increment = bs * BlockSize;
       auto seed_offset = gen_cuda->IncrementOffset(increment);
       seed_now = seed_offset.first;
       offset = seed_offset.second;
@@ -1234,10 +1246,12 @@ void TopPSamplingKernel(const Context& dev_ctx,
                           ids_ptr,
                           ps_now.data<T>(),
                           threshold_data,
+                          infer_seed,
                           states,
                           p_num,
                           vocab_size,
                           bs,
+                          seed_now + offset,
                           need_batch_random,
                           count_iter.data<int>(),
                           count_iter_begin.data<int>(),
@@ -1255,8 +1269,8 @@ PD_REGISTER_KERNEL(top_p_sampling,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(top_p_sampling,
                    GPU,
@@ -1266,5 +1280,5 @@ PD_REGISTER_KERNEL(top_p_sampling,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

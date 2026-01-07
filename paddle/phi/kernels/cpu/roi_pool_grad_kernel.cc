@@ -17,6 +17,7 @@
 #include "paddle/phi/backends/cpu/cpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/empty_kernel.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 
 namespace phi {
@@ -32,6 +33,12 @@ void RoiPoolGradKernel(const Context& dev_ctx,
                        int pooled_width,
                        float spatial_scale,
                        DenseTensor* dx) {
+  if (x.numel() == 0 || boxes.numel() == 0) {
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(dx->dims())), 0, dx);
+    return;
+  }
+
   if (dx) {
     int rois_num = static_cast<int>(boxes.dims()[0]);
     DenseTensor box_batch_id_list = Empty<int>(dev_ctx, {rois_num});
@@ -63,7 +70,7 @@ void RoiPoolGradKernel(const Context& dev_ctx,
     const int64_t* arg_max_data = arg_max.data<int64_t>();
     T* dx_data = dev_ctx.template Alloc<T>(dx);
 
-    phi::funcs::SetConstant<Context, T> set_zero;
+    funcs::SetConstant<Context, T> set_zero;
     set_zero(dev_ctx, dx, static_cast<T>(0));
 
     auto in_stride = common::stride(x.dims());

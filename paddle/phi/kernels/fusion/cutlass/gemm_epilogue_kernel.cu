@@ -56,7 +56,7 @@ void GemmEpilogueKernel(const Context& dev_ctx,
                         "In gemm_epilogue kernel, weight_dims should be 2."));
   // gemm_epilogue_out should be reshape since can not get lod in infershape
   std::vector<int64_t> output_dims;
-  phi::funcs::FCOutputSize(
+  funcs::FCOutputSize(
       input.dims(), weight_dims, output_dims, in_num_col_dims, padding_weights);
   out->Resize(common::make_ddim(output_dims));
   out->set_lod(input.lod());
@@ -204,5 +204,5 @@ PD_REGISTER_KERNEL(gemm_epilogue,
                    GPU,
                    ALL_LAYOUT,
                    phi::fusion::cutlass_internal::GemmEpilogueKernel,
-                   phi::dtype::bfloat16,
-                   phi::dtype::float16) {}
+                   phi::bfloat16,
+                   phi::float16) {}

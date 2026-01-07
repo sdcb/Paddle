@@ -54,7 +54,7 @@ limitations under the License. */
 #include "paddle/fluid/distributed/collective/xpu_async_load.h"
 #endif
 
-#if defined(PADDLE_WITH_FLAGCX)
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
 #include "paddle/fluid/distributed/collective/process_group_flagcx.h"
 #endif
 
@@ -86,12 +86,11 @@ using GlooStore = paddle::distributed::ProcessGroupGloo::GlooStore;
 using GlooOptions = paddle::distributed::ProcessGroupGloo::GlooOptions;
 #endif
 
-#if defined(PADDLE_WITH_FLAGCX)
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
 using ProcessGroupFlagcx = paddle::distributed::ProcessGroupFlagcx;
 #endif
 
-static UNUSED void *use_ccl_comm_func =
-    phi::detail::GetCCLComm(phi::CPUPlace());
+static UNUSED void *use_ccl_comm_func = phi::detail::GetCCLComm(CPUPlace());
 
 void BindDistributed(py::module *m) {
   py::enum_<distributed::ReduceOp>(*m, "ReduceOp")
@@ -149,6 +148,19 @@ void BindDistributed(py::module *m) {
           .def("eager_connect_ring_exchange",
                &distributed::ProcessGroup::EagerConnectRingExchange,
                py::call_guard<py::gil_scoped_release>())
+#ifdef PADDLE_WITH_NCCL
+          .def("erase_stream",
+               [](distributed::ProcessGroup &self,
+                  const paddle::Tensor &tensor) {
+                 auto *pg_with_stream =
+                     dynamic_cast<distributed::ProcessGroupWithStream *>(&self);
+                 auto *dense_tensor =
+                     dynamic_cast<phi::DenseTensor *>(tensor.impl().get());
+                 if (pg_with_stream && dense_tensor) {
+                   pg_with_stream->EraseStream(*dense_tensor);
+                 }
+               })
+#endif
           .def(
               "all_reduce",
               [](distributed::ProcessGroup &self,
@@ -563,8 +575,7 @@ void BindDistributed(py::module *m) {
                 auto *dev_ctx =
                     self.GetDeviceContext(in_tensor.place(), use_calc_stream);
                 SplitTensor(*dev_ctx, *out_dense, &out_tensor_list);
-                if (!use_calc_stream &&
-                    dev_ctx->GetPlace() != phi::CPUPlace()) {
+                if (!use_calc_stream && dev_ctx->GetPlace() != CPUPlace()) {
                   // calculate stream will wait comm stream
                   task->UpdateWaitChain(*dev_ctx);
                 }
@@ -1249,6 +1260,8 @@ void BindDistributed(py::module *m) {
                   py::call_guard<py::gil_scoped_release>())
       .def_static("group_start", distributed::ProcessGroupNCCL::GroupStart)
       .def_static("group_end", distributed::ProcessGroupNCCL::GroupEnd)
+      .def("get_stream", &distributed::ProcessGroupNCCL::GetStream)
+      .def("set_outer_wait", &distributed::ProcessGroupNCCL::SetOuterEventWait)
       .def("shutdown", &distributed::ProcessGroupNCCL::Shutdown)
       .def("restart", &distributed::ProcessGroupNCCL::Restart)
       .def(
@@ -1524,7 +1537,7 @@ void BindDistributed(py::module *m) {
                   py::call_guard<py::gil_scoped_release>());
 #endif
 
-#if defined(PADDLE_WITH_FLAGCX)
+#if defined(PADDLE_WITH_FLAGCX) && !defined(PADDLE_WITH_XPU)
   py::class_<ProcessGroupFlagcx, std::shared_ptr<ProcessGroupFlagcx>>(
       *m, "ProcessGroupFlagcx", ProcessGroup)
       .def_static("create",

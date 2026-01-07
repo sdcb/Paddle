@@ -491,7 +491,7 @@ void StridedSliceGradCompute(const Context& dev_ctx,
   }
 
   dev_ctx.template Alloc<T>(x_grad);
-  phi::funcs::SetConstant<Context, T> set_zero;
+  funcs::SetConstant<Context, T> set_zero;
   set_zero(dev_ctx, x_grad, static_cast<T>(0));
 
   auto out_grad_dims = out_grad.dims();
@@ -529,9 +529,9 @@ void StridedSliceGradCompute(const Context& dev_ctx,
                              const std::vector<int>& infer_flags,
                              const std::vector<int>& decrease_axis,
                              TensorArray* x_grad) {
-  // Note(weixin):Since the shape of `framework::GradVarName("Input")` of
+  // Note(weixin):Since the shape of `x_grad` of
   // StridedSliceGrad cannot be calculated by
-  // `framework::GradVarName("Output")`, the dim of "Input" is used to
+  // `out_grad`, the dim of "x" is used to
   // calculate the output shape. when set it to inplace OP, there may be
   // some problems.
   const int64_t size = x.size();
@@ -642,7 +642,7 @@ void StridedSliceGradCompute(const Context& dev_ctx,
         dev_ctx.template Alloc<T>(&d_out_tensor);
       }
 
-      phi::funcs::SetConstant<Context, T> set_zero;
+      funcs::SetConstant<Context, T> set_zero;
       set_zero(dev_ctx, &d_out_tensor, static_cast<T>(0));
     }
   }

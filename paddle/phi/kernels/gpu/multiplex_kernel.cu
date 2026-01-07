@@ -27,6 +27,7 @@ void MultiplexKernel(const Context& dev_ctx,
                      const DenseTensor& ids,
                      DenseTensor* out) {
   dev_ctx.template Alloc<T>(out);
+  if (out->numel() == 0) return;
   for (size_t i = 0; i < ins.size(); ++i) {
     PADDLE_ENFORCE_GT(
         ins[i]->numel(),
@@ -39,7 +40,7 @@ void MultiplexKernel(const Context& dev_ctx,
   auto rows = ins[0]->dims()[0];
   auto cols = ins[0]->numel() / rows;
   DenseTensor index_t_cpu;
-  phi::Copy(dev_ctx, ids, phi::CPUPlace(), true, &index_t_cpu);
+  Copy(dev_ctx, ids, CPUPlace(), true, &index_t_cpu);
   auto* index = index_t_cpu.data<int32_t>();
   auto stream = dev_ctx.stream();
   for (auto i = 0; i < ids.dims()[0]; i++) {
@@ -69,5 +70,5 @@ PD_REGISTER_KERNEL(multiplex,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {}
+                   phi::complex64,
+                   phi::complex128) {}

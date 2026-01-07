@@ -118,7 +118,7 @@ class Movielens(Dataset):
 
     Examples:
 
-        .. code-block:: python
+        .. code-block:: pycon
 
             >>> # doctest: +TIMEOUT(75)
             >>> import paddle
@@ -143,17 +143,16 @@ class Movielens(Dataset):
             ...     model = SimpleNet()
             ...     category, title, rating = model(category, title, rating)
             ...     print(category.shape, title.shape, rating.shape)
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-            [] [] []
-
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
+            paddle.Size([]) paddle.Size([]) paddle.Size([])
     """
 
     mode: _MovieLensDataSetMode
@@ -182,9 +181,9 @@ class Movielens(Dataset):
 
         self.data_file = data_file
         if self.data_file is None:
-            assert (
-                download
-            ), "data_file is not set and downloading automatically is disabled"
+            assert download, (
+                "data_file is not set and downloading automatically is disabled"
+            )
             self.data_file = _check_exists_and_download(
                 data_file, URL, MD5, 'sentiment', download
             )

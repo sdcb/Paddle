@@ -221,10 +221,28 @@ __device__ __forceinline__ int64_t ld_volatile_global(const uint64_t *ptr) {
 #define DISABLE_AGGRESSIVE_PTX_INSTRS
 #endif
 
+// swgu98: cuda13 strictly limits graphics cards below 80 architecture from
+// using ".L2::256B" optimization
+#if (__CUDACC_VER_MAJOR__ >= 13)
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
 #ifndef DISABLE_AGGRESSIVE_PTX_INSTRS
 #define LD_NC_FUNC "ld.global.nc.L1::no_allocate.L2::256B"
 #else
+#define LD_NC_FUNC "ld.volatile.global.L2::256B"
+#endif
+#else
+#ifndef DISABLE_AGGRESSIVE_PTX_INSTRS
+#define LD_NC_FUNC "ld.global.nc.L1::no_allocate"
+#else
 #define LD_NC_FUNC "ld.volatile.global"
+#endif
+#endif
+#else
+#ifndef DISABLE_AGGRESSIVE_PTX_INSTRS
+#define LD_NC_FUNC "ld.global.nc.L1::no_allocate.L2::256B"
+#else
+#define LD_NC_FUNC "ld.volatile.global.L2::256B"
+#endif
 #endif
 
 // `ld.global.nc.L1::no_allocate` will be translated into
@@ -455,6 +473,15 @@ __forceinline__ __device__ int warp_reduce_sum(int value) {
   value += __shfl_xor_sync(0xffffffff, value, 4);
   value += __shfl_xor_sync(0xffffffff, value, 2);
   value += __shfl_xor_sync(0xffffffff, value, 1);
+  return value;
+}
+
+__forceinline__ __device__ float warp_reduce_max(float value) {
+  value = max(value, __shfl_xor_sync(0xffffffff, value, 8));
+  value = max(value, __shfl_xor_sync(0xffffffff, value, 8));
+  value = max(value, __shfl_xor_sync(0xffffffff, value, 4));
+  value = max(value, __shfl_xor_sync(0xffffffff, value, 2));
+  value = max(value, __shfl_xor_sync(0xffffffff, value, 1));
   return value;
 }
 

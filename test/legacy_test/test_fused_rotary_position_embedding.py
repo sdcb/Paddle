@@ -16,6 +16,7 @@ import unittest
 
 import numpy as np
 import parameterized as param
+from op_test import is_custom_device
 
 import paddle
 from paddle.base import core
@@ -35,6 +36,9 @@ def mult_qkv(value, cos_tensor, sin_tensor):
     if value is None:
         return None
 
+    rot_dim = cos_tensor.shape[-1]
+    value, value_pass = value[..., :rot_dim], value[..., rot_dim:]
+
     rotate_half_q = paddle.reshape(
         paddle.stack([-value[:, :, :, 1::2], value[:, :, :, 0::2]], axis=-1),
         paddle.shape(value),
@@ -43,12 +47,15 @@ def mult_qkv(value, cos_tensor, sin_tensor):
         paddle.multiply(value, cos_tensor),
         paddle.multiply(rotate_half_q, sin_tensor),
     )
-    return query
+    return paddle.cat([query, value_pass], axis=-1)
 
 
 def mult_qkv_rotate_half(value, cos_tensor, sin_tensor):
     if value is None:
         return None
+
+    rot_dim = cos_tensor.shape[-1]
+    value, value_pass = value[..., :rot_dim], value[..., rot_dim:]
 
     rotate_half_q = paddle.reshape(
         paddle.concat(
@@ -64,7 +71,7 @@ def mult_qkv_rotate_half(value, cos_tensor, sin_tensor):
         paddle.multiply(value, cos_tensor),
         paddle.multiply(rotate_half_q, sin_tensor),
     )
-    return query
+    return paddle.cat([query, value_pass], axis=-1)
 
 
 def get_sin_cos_tensor(seq_len, head_dim, sign=1, rotate_half=False):
@@ -86,7 +93,9 @@ def get_sin_cos_tensor(seq_len, head_dim, sign=1, rotate_half=False):
         for value in iter_array:
             sin_sin[i] = sign * np.sin(value)
             cos_cos[i] = np.cos(value)
-            sin_sin[i + stride] = np.sin(value)
+            sin_sin[i + stride] = np.sin(
+                value * 0.1
+            )  # Verify the accuracy of the reverse computation logic for rotate_half by setting the front and back sin values inconsistently.
             cos_cos[i + stride] = np.cos(value)
             i += 1
             if i % head_dim == stride:
@@ -158,7 +167,8 @@ def paddle_fused_rotary_position_embedding(
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda() and not paddle.is_compiled_with_rocm(),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    and not paddle.is_compiled_with_rocm(),
     "core is not compiled with CUDA or ROCM ",
 )
 @param.parameterized_class(
@@ -223,7 +233,12 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
         return tmp
 
     def get_inputs(
-        self, seed, with_sin_cos, with_grads=False, rotate_half=False
+        self,
+        seed,
+        with_sin_cos,
+        rotary_percent=1.0,
+        with_grads=False,
+        rotate_half=False,
     ):
         paddle.disable_static()
         paddle.seed(seed)
@@ -234,7 +249,10 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
 
         tensor_sin, tensor_cos = (
             get_sin_cos_tensor(
-                tensor_q.shape[1], tensor_q.shape[3], 1, rotate_half=rotate_half
+                tensor_q.shape[1],
+                int(tensor_q.shape[3] * rotary_percent),
+                1,
+                rotate_half=rotate_half,
             )
             if with_sin_cos
             else (None, None)
@@ -260,6 +278,7 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
         rope_function,
         seed,
         with_sin_cos=True,
+        rotary_percent=1.0,
         use_neox_rotary_style=True,
         position_ids=None,
         test_time_major=False,
@@ -280,6 +299,7 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
         ) = self.get_inputs(
             seed,
             with_sin_cos,
+            rotary_percent,
             with_grads=True,
             rotate_half=not use_neox_rotary_style,
         )
@@ -398,6 +418,33 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
             fused_rotary_position_embedding,
             seed=self.seed,
             with_sin_cos=True,
+            test_time_major=True,
+        )
+
+        self.check_results(p_fw, f_fw)
+        self.check_results(p_bw, f_bw)
+        self.check_results(p_fw, f_fw_time_major)
+        self.check_results(p_bw, f_bw_time_major)
+
+    def test_fused_rope_with_sin_cos_with_rotary_percent(self):
+        p_fw, p_bw = self.get_forward_backward(
+            paddle_fused_rotary_position_embedding,
+            seed=self.seed,
+            with_sin_cos=True,
+            rotary_percent=0.5,
+        )
+        f_fw, f_bw = self.get_forward_backward(
+            fused_rotary_position_embedding,
+            seed=self.seed,
+            with_sin_cos=True,
+            rotary_percent=0.5,
+            test_time_major=False,
+        )
+        f_fw_time_major, f_bw_time_major = self.get_forward_backward(
+            fused_rotary_position_embedding,
+            seed=self.seed,
+            with_sin_cos=True,
+            rotary_percent=0.5,
             test_time_major=True,
         )
 
@@ -690,6 +737,57 @@ class TestFusedRotaryPositionEmbedding(unittest.TestCase):
             )
 
         self.assertRaises(AssertionError, test_error2)
+
+
+@unittest.skipIf(
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    and not paddle.is_compiled_with_rocm(),
+    "core is not compiled with CUDA or ROCM ",
+)
+class TestFusedRotaryPositionEmbeddingZeroSize(unittest.TestCase):
+    def setUp(self):
+        self.dtype = "float32"
+        self.qkv_shape = [0, 1, 8, 8]
+        self.sin_cos_shape = [1, 1, 1, 8]
+
+    def init_data(self):
+        self.q = paddle.randn(self.qkv_shape, dtype=self.dtype)
+        self.k = paddle.randn(self.qkv_shape, dtype=self.dtype)
+        self.v = paddle.randn(self.qkv_shape, dtype=self.dtype)
+        self.q.stop_gradient = False
+        self.k.stop_gradient = False
+        self.v.stop_gradient = False
+        self.sin = paddle.sin(
+            paddle.randn(self.sin_cos_shape, dtype=self.dtype)
+        )
+        self.cos = paddle.cos(
+            paddle.randn(self.sin_cos_shape, dtype=self.dtype)
+        )
+
+    def _test_forward_backward(self):
+        out_q, out_k, out_v = fused_rotary_position_embedding(
+            self.q,
+            self.k,
+            self.v,
+            sin=self.sin,
+            cos=self.cos,
+            use_neox_rotary_style=False,
+        )
+        out = out_q + out_k + out_v
+        out.backward()
+        np.testing.assert_allclose(
+            self.q.shape, self.q.grad.shape, rtol=1e-05, atol=1e-06
+        )
+        np.testing.assert_allclose(
+            self.k.shape, self.k.grad.shape, rtol=1e-05, atol=1e-06
+        )
+        np.testing.assert_allclose(
+            self.v.shape, self.v.grad.shape, rtol=1e-05, atol=1e-06
+        )
+
+    def test_zero_size(self):
+        self.init_data()
+        self._test_forward_backward()
 
 
 if __name__ == "__main__":

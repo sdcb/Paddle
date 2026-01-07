@@ -30,6 +30,7 @@ import numpy as np
 
 import paddle
 from paddle import _legacy_C_ops, framework
+from paddle.base.core import get_all_custom_device_type
 from paddle.distributed.collective import (
     Group,
     _default_group_name,
@@ -97,7 +98,9 @@ def _coalesce_tensors(var_groups):
         for g_var in grad_vars:
             g_var_shapes.append(g_var.shape)
             flattened_vars.append(
-                paddle.reshape(x=g_var, shape=[np.prod(g_var.shape)])
+                paddle.reshape(
+                    x=g_var, shape=[np.prod(g_var.shape, dtype="int64")]
+                )
             )
         coalesced_grad = paddle.concat(flattened_vars)
         coalesced_grads_and_grad_vars.append(
@@ -125,7 +128,9 @@ def _split_tensors(coalesced_grads_and_grad_vars):
             origin_grad_vars,
             grad_shapes,
         ) in coalesced_grads_and_grad_vars:
-            grad_var_len = [np.prod(g_shape) for g_shape in grad_shapes]
+            grad_var_len = [
+                np.prod(g_shape, dtype="int64") for g_shape in grad_shapes
+            ]
             attrs = ()
             attrs += ('sections', grad_var_len)
             attrs += ('axis', 0)
@@ -149,7 +154,9 @@ def build_groups(
         var_dtype = var.dtype
         if isinstance(var_dtype, core.DataType):
             var_dtype = paddle.pir.core.datatype_to_vartype[var_dtype]
-        bytes = np.prod(var.shape) * core.size_of_dtype(var_dtype)
+        bytes = np.prod(var.shape, dtype="int64") * core.size_of_dtype(
+            var_dtype
+        )
         if memory_counter < group_size and dtype == var.dtype:
             memory_counter += bytes
         else:
@@ -210,7 +217,9 @@ def sync_params_buffers(
                 coalesced_var, src=src_rank, group=comm_group, sync_op=True
             )
         for coalesced_var, origin_vars, var_shapes in coalesced_vars:
-            var_len = [np.prod(v_shape) for v_shape in var_shapes]
+            var_len = [
+                np.prod(v_shape, dtype="int64") for v_shape in var_shapes
+            ]
             paddle.base.framework._dygraph_tracer().trace_op(
                 type='split',
                 inputs={'X': coalesced_var},
@@ -391,9 +400,9 @@ class DataParallel(Layer):
     ) -> None:
         super().__init__(layers.full_name() + "_data_parallel")
 
-        assert (
-            in_dynamic_mode()
-        ), "It's not supported to construct DataParallel in static graph mode."
+        assert in_dynamic_mode(), (
+            "It's not supported to construct DataParallel in static graph mode."
+        )
 
         self._layers = layers
         self.find_unused_parameters = find_unused_parameters
@@ -731,7 +740,10 @@ class ParallelEnv:
     def __init__(self):
         self._rank = int(os.getenv("PADDLE_TRAINER_ID", "0"))
         self._world_size = int(os.getenv("PADDLE_TRAINERS_NUM", "1"))
-        self._device_type = str(os.getenv("PADDLE_XCCL_BACKEND", ""))
+        custom_device_types = get_all_custom_device_type()
+        self._device_type = (
+            str(custom_device_types[0]) if custom_device_types else ""
+        )
         self._pg_timeout = int(os.getenv("PADDLE_PG_TIMEOUT", "1800000"))
 
         # imperative only support one gpu or xpu
@@ -756,12 +768,12 @@ class ParallelEnv:
         ).split(",")
         self._current_endpoint = os.getenv("PADDLE_CURRENT_ENDPOINT", "")
         self._nrings = int(os.getenv("FLAGS_nccl_nrings", "1"))
-        assert (
-            self._nrings > 0
-        ), "nccl_nrings must be an integer greater than 0."
-        assert (
-            self._nrings < 9
-        ), "nccl_nrings should be less than 9, which is enough in most scenarios."
+        assert self._nrings > 0, (
+            "nccl_nrings must be an integer greater than 0."
+        )
+        assert self._nrings < 9, (
+            "nccl_nrings should be less than 9, which is enough in most scenarios."
+        )
 
     @property
     def rank(self) -> int:
@@ -830,7 +842,7 @@ class ParallelEnv:
         """
         The type of custom device for parallel training.
 
-        Its value is equal to the value of the environment variable ``PADDLE_XCCL_BACKEND`` . The default value is None.
+        Its value is equal to the value of paddle.device.get_all_custom_device_type() . The default value is None.
 
         """
         return self._device_type
@@ -1058,6 +1070,12 @@ def init_parallel_env(nccl_config: NCCLConfig | None = None) -> Group:
     # NOTE(xiongkun): support cpu gloo only, add this environment variable to
     #                 enable cpu only gloo parallel training)
     backend = os.environ.get('PADDLE_DISTRI_BACKEND', 'auto')
+    # if we want to use flagcx as backend in xpu environment, we need to
+    # set backend to bkcl, and process_group_bkcl will internally invoke
+    # flagcx to perform communication tasks
+    if backend == "flagcx" and core.is_compiled_with_xpu():
+        os.environ['PADDLE_DISTRI_BACKEND'] = "bkcl"
+        backend = "bkcl"
     is_cpu_only = _is_cpuonly(backend)
     # 1. gpu xpu check, must be gpu or xpu,
     if not (

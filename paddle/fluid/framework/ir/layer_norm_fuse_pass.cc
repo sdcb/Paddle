@@ -57,7 +57,7 @@ bool validateReduceOpAttrs(const Node* node,
     EXPECT_TRUE(
         !PADDLE_GET_CONST(bool, op->GetAttr("reduce_all")),
         ::paddle::string::Sprintf(
-            "The LayerNorm fusion %s"
+            "The LayerNorm fusion %s "
             "reduction must have \'reduce_all\' attribute set to false.",
             name));
   }
@@ -72,7 +72,7 @@ bool validateReduceOpAttrs(const Node* node,
     }
     for (size_t i = 1; i < dims.size(); ++i) {
       if (1 != dims[i] - dims[i - 1]) {
-        LOG(WARNING) << "The LayerNorm dim of mean must be  continuous";
+        LOG(WARNING) << "The LayerNorm dim of mean must be continuous";
         return false;
       }
     }
@@ -348,8 +348,8 @@ void LayerNormFusePass::ApplyImpl(Graph* graph) const {
     auto* new_gamma_tensor =
         scope->Var(new_gamma_node->Name())->GetMutable<phi::DenseTensor>();
     new_gamma_tensor->Resize(common::make_ddim({layer_norm_x_mat_dims[1]}));
-    memcpy(new_gamma_tensor->mutable_data<float>(phi::CPUPlace()),
-           gamma_tensor->mutable_data<float>(phi::CPUPlace()),
+    memcpy(new_gamma_tensor->mutable_data<float>(CPUPlace()),
+           gamma_tensor->mutable_data<float>(CPUPlace()),
            layer_norm_x_mat_dims[1] * sizeof(float));
 
     auto* beta_tensor =
@@ -365,8 +365,8 @@ void LayerNormFusePass::ApplyImpl(Graph* graph) const {
         scope->Var(new_beta_node->Name())->GetMutable<phi::DenseTensor>();
 
     new_beta_tensor->Resize(common::make_ddim({layer_norm_x_mat_dims[1]}));
-    memcpy(new_beta_tensor->mutable_data<float>(phi::CPUPlace()),
-           beta_tensor->mutable_data<float>(phi::CPUPlace()),
+    memcpy(new_beta_tensor->mutable_data<float>(CPUPlace()),
+           beta_tensor->mutable_data<float>(CPUPlace()),
            layer_norm_x_mat_dims[1] * sizeof(float));
 
     // ------------------ op creation and placement ---------------------------

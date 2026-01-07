@@ -36,11 +36,8 @@
 #include "paddle/fluid/framework/new_executor/instruction/instruction_util.h"
 #include "paddle/fluid/pir/dialect/operator/ir/control_flow_op.h"
 #include "paddle/fluid/pir/dialect/operator/ir/manual_op.h"
-#include "paddle/pir/include/dialect/control_flow/ir/cf_op.h"
-
-#ifdef PADDLE_WITH_DNNL
 #include "paddle/fluid/platform/onednn_helper.h"
-#endif
+#include "paddle/pir/include/dialect/control_flow/ir/cf_op.h"
 
 COMMON_DECLARE_bool(check_cuda_error);
 
@@ -222,7 +219,7 @@ void WhileInstruction::Run() {
   // Executor on being destroyed clears oneDNN cache and resets
   // registered model data layout. This is unwanted for nested
   // Executors (executors declared inside control ops)
-  paddle::platform::DontClearMKLDNNCache(body_inter_->GetPlace());
+  paddle::platform::DontClearONEDNNCache(body_inter_->GetPlace());
 #endif
   ShareInputsToOutputs();
 

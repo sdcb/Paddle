@@ -14,6 +14,7 @@
 
 #include "paddle/phi/core/memory/allocation/stream_safe_xpu_allocator.h"
 #include <thread>
+#include "glog/logging.h"
 
 #include "paddle/phi/api/profiler/event_tracing.h"
 #include "paddle/phi/backends/xpu/enforce_xpu.h"
@@ -38,6 +39,10 @@ StreamSafeXPUAllocation::StreamSafeXPUAllocation(
 bool StreamSafeXPUAllocation::RecordStream(XPUStream stream) {
   VLOG(8) << "Try record stream " << stream << " for address " << ptr();
   if (stream == owning_stream_) {
+    VLOG(8) << "stream " << stream << " is the same as owning stream "
+            << owning_stream_;
+    VLOG(8) << "Skip recording the same stream " << stream << " for address "
+            << ptr();
     return false;
   }
 
@@ -57,9 +62,13 @@ bool StreamSafeXPUAllocation::CanBeFreed() {
        it != outstanding_event_map_.end();
        ++it) {
     XPUEvent& event = it->second;
-
-    PADDLE_ENFORCE_XRE_SUCCESS(xpu_event_destroy(event));
-    VLOG(8) << "Destroy event " << event;
+    if (xpu_event_query(event) == XPU_SUCCESS) {
+      PADDLE_ENFORCE_XRE_SUCCESS(xpu_event_destroy(event));
+      VLOG(8) << "Destroy event " << event;
+    } else {
+      outstanding_event_map_.erase(outstanding_event_map_.begin(), it);
+      return false;
+    }
   }
   return true;
 }

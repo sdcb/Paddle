@@ -23,6 +23,7 @@
 #include "paddle/common/hostdevice.h"
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/full_kernel.h"
 #include "paddle/phi/kernels/funcs/elementwise_functor.h"
 #include "paddle/phi/kernels/funcs/math_function.h"
 #include "paddle/phi/kernels/gpu/graph_send_recv_funcs.h"
@@ -42,7 +43,10 @@ void GraphSendUERecvOpCUDAKernelLaunchHelper(const Context& dev_ctx,
                                              int64_t out_size,
                                              DenseTensor* out,
                                              DenseTensor* dst_count = nullptr) {
-  const int& index_size = src_index.dims()[0];
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  const int64_t& index_size = src_index.dims()[0];
+
   auto out_dims = out->dims();
   int64_t memset_size = 1;
   std::vector<int64_t> dims_ = common::vectorize(out_dims);
@@ -282,6 +286,30 @@ void SendUERecvKernel(const Context& dev_ctx,
                       DenseTensor* dst_count) {
   auto index_type = src_index.dtype();
   auto& out_size_data = out_size.GetData();
+
+  if (x.numel() == 0 || y.numel() == 0 || src_index.numel() == 0 ||
+      dst_index.numel() == 0) {
+    std::vector<int64_t> dims_ = common::vectorize(out->dims());
+    if (out_size_data[0] <= 0) {
+      dims_[0] = x.dims()[0];
+    } else {
+      dims_[0] = out_size_data[0];
+    }
+    if (reduce_op == "MEAN") {
+      int64_t input_size =
+          out_size_data[0] <= 0 ? x.dims()[0] : out_size_data[0];
+      dst_count->Resize({input_size});
+    }
+    out->Resize(common::make_ddim(dims_));
+    phi::Full<T, Context>(
+        dev_ctx, phi::IntArray(common::vectorize(out->dims())), 0, out);
+    phi::Full<int, Context>(dev_ctx,
+                            phi::IntArray(common::vectorize(dst_count->dims())),
+                            0,
+                            dst_count);
+    return;
+  }
+
   if (index_type == phi::DataType::INT32) {
     GraphSendUERecvOpCUDAKernelLaunchHelper<Context, T, int32_t>(
         dev_ctx,
@@ -319,6 +347,6 @@ PD_REGISTER_KERNEL(send_ue_recv,
                    double,
                    int,
                    int64_t,
-                   phi::dtype::float16) {
+                   phi::float16) {
   kernel->OutputAt(1).SetDataType(phi::DataType::INT32);
 }

@@ -15,7 +15,6 @@
 #include "paddle/phi/kernels/scatter_nd_add_kernel.h"
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
-#include "paddle/phi/common/bfloat16.h"
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/core/tensor_utils.h"
 #include "paddle/phi/kernels/funcs/scatter.cu.h"
@@ -28,6 +27,10 @@ void ScatterNdAddKernel(const Context &dev_ctx,
                         const DenseTensor &index,
                         const DenseTensor &updates,
                         DenseTensor *out) {
+  if (out && out->numel() == 0) {
+    dev_ctx.template Alloc<T>(out);
+    return;
+  }
   Copy(dev_ctx, x, dev_ctx.GetPlace(), false, out);
   const auto &index_type = index.dtype();
   bool index_type_match =
@@ -41,9 +44,9 @@ void ScatterNdAddKernel(const Context &dev_ctx,
                         phi::DataType::INT32,
                         phi::DataType::INT64));
   if (index_type == phi::DataType::INT32) {
-    phi::funcs::GPUScatterNdAdd<T, int32_t>(dev_ctx, updates, index, out);
+    funcs::GPUScatterNdAdd<T, int32_t>(dev_ctx, updates, index, out);
   } else {
-    phi::funcs::GPUScatterNdAdd<T, int64_t>(dev_ctx, updates, index, out);
+    funcs::GPUScatterNdAdd<T, int64_t>(dev_ctx, updates, index, out);
   }
 }
 
@@ -57,5 +60,5 @@ PD_REGISTER_KERNEL(scatter_nd_add,
                    double,
                    int64_t,
                    int,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}

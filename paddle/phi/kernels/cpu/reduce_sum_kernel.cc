@@ -56,15 +56,15 @@ void SumRawKernel(const Context& dev_ctx,
     }
     return;
   }
-  if constexpr (std::is_same_v<T, phi::dtype::float16> ||
-                std::is_same_v<T, phi::dtype::bfloat16>) {
+  if constexpr (std::is_same_v<T, phi::float16> ||
+                std::is_same_v<T, phi::bfloat16>) {
     DenseTensor x_fp32 = phi::Cast<T, Context>(dev_ctx, x, DataType::FLOAT32);
     DataType final_out_dtype = out_dtype;
     if (final_out_dtype == DataType::UNDEFINED) {
       final_out_dtype = x.dtype();
     }
     if (final_out_dtype == DataType::FLOAT32) {
-      phi::Reduce<CPUContext, float, phi::funcs::SumFunctor>(
+      phi::Reduce<CPUContext, float, funcs::SumFunctor>(
           dev_ctx,
           x_fp32,
           reduce_all,
@@ -75,7 +75,7 @@ void SumRawKernel(const Context& dev_ctx,
     } else {
       DenseTensor intermediate_result;
       intermediate_result.set_meta(out->meta());
-      phi::Reduce<CPUContext, float, phi::funcs::SumFunctor>(
+      phi::Reduce<CPUContext, float, funcs::SumFunctor>(
           dev_ctx,
           x_fp32,
           reduce_all,
@@ -88,15 +88,12 @@ void SumRawKernel(const Context& dev_ctx,
           dev_ctx, intermediate_result, final_out_dtype, out);
     }
   } else {
-    phi::Reduce<CPUContext, T, phi::funcs::SumFunctor>(
+    phi::Reduce<CPUContext, T, funcs::SumFunctor>(
         dev_ctx, x, reduce_all, dims.GetData(), keep_dim, out_dtype, out);
   }
 }
 
 }  // namespace phi
-
-using complex64 = ::phi::dtype::complex<float>;
-using complex128 = ::phi::dtype::complex<double>;
 
 PD_REGISTER_KERNEL(sum_raw,
                    CPU,
@@ -105,14 +102,14 @@ PD_REGISTER_KERNEL(sum_raw,
                    bool,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
+                   phi::float16,
+                   phi::bfloat16,
                    int16_t,
                    int8_t,
                    uint8_t,
                    int,
                    int64_t,
-                   complex64,
-                   complex128) {
+                   phi::complex64,
+                   phi::complex128) {
   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
 }

@@ -31,7 +31,7 @@ void RandomRoutingKernel(const Context& dev_ctx,
 
   size_t D = topk_idx->dims()[1];
 
-  phi::DenseTensor topk_value_cpu, prob_cpu;
+  DenseTensor topk_value_cpu, prob_cpu;
   phi::Copy(dev_ctx, *topk_value, phi::CPUPlace(), true, &topk_value_cpu);
   phi::Copy(dev_ctx, *prob, phi::CPUPlace(), true, &prob_cpu);
   auto* topk_value_data = topk_value_cpu.data<T>();
@@ -58,5 +58,5 @@ PD_REGISTER_KERNEL(random_routing,
                    phi::RandomRoutingKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif

@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import inspect
 import warnings
+from typing import TYPE_CHECKING
 
 from .. import core
 from ..dygraph.base import in_to_static_mode
@@ -23,6 +26,9 @@ from ..framework import (
     default_main_program,
     static_only,
 )
+
+if TYPE_CHECKING:
+    from paddle import Tensor
 
 _supported_int_dtype_ = [
     core.VarDesc.VarType.BOOL,
@@ -382,6 +388,9 @@ def monkey_patch_variable():
         out.stop_gradient = self.stop_gradient
         return out
 
+    def type_as(self, other):
+        return self.astype(other.dtype)
+
     @static_only
     def append(self, var):
         """
@@ -560,6 +569,54 @@ def monkey_patch_variable():
                 3
         """
         return len(self.shape)
+
+    @property
+    def requires_grad(self) -> bool:
+        """
+        Whether this Tensor requires gradient computation.
+
+        This is a convenience property that returns the opposite of stop_gradient.
+        Setting requires_grad=True is equivalent to setting stop_gradient=False.
+
+        Examples:
+            .. code-block:: python
+
+                >>> import paddle
+                >>> x = paddle.randn([2, 3])
+                >>> print(x.requires_grad)  # False by default
+                >>>
+                >>> x.requires_grad = False
+                >>> print(x.stop_gradient)  # True
+        """
+        return not self.stop_gradient
+
+    @requires_grad.setter
+    def requires_grad(self, value: bool) -> None:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            value (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(value, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(value)}"
+            )
+        self.stop_gradient = not value
+
+    def requires_grad_(self, requires_grad: bool = True) -> Tensor:
+        """
+        Set whether this Tensor requires gradient computation.
+
+        Args:
+            requires_grad (bool): True to enable gradient computation, False to disable.
+        """
+        if not isinstance(requires_grad, bool):
+            raise TypeError(
+                f"requires_grad must be bool, but got {type(requires_grad)}"
+            )
+        self.stop_gradient = not requires_grad
+        return self
 
     def _scalar_add_(var, value):
         return _scalar_op_(var, 1.0, value)
@@ -799,6 +856,7 @@ def monkey_patch_variable():
         ('__neg__', _neg_),
         ('__abs__', _abs_),
         ('astype', astype),
+        ('type_as', type_as),
         ('cpu', cpu),
         ('cuda', cuda),
         ('place', place),
@@ -810,6 +868,8 @@ def monkey_patch_variable():
         ('dim', dim),
         ('ndimension', ndimension),
         ('ndim', _ndim),
+        ("requires_grad", requires_grad),
+        ("requires_grad_", requires_grad_),
         (
             '__add__',
             _binary_creator_('__add__', 'elementwise_add', False, _scalar_add_),

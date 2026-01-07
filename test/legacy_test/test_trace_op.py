@@ -15,7 +15,13 @@
 import unittest
 
 import numpy as np
-from op_test import OpTest, convert_float_to_uint16
+from op_test import (
+    OpTest,
+    convert_float_to_uint16,
+    get_device_place,
+    get_places,
+    is_custom_device,
+)
 
 import paddle
 from paddle import base, tensor
@@ -119,8 +125,8 @@ class TestTraceFP16Op2(TestTraceOp):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestTraceBF16Op1(OpTest):
@@ -132,7 +138,7 @@ class TestTraceBF16Op1(OpTest):
 
         self.inputs['Input'] = convert_float_to_uint16(self.inputs['Input'])
         self.outputs['Out'] = convert_float_to_uint16(self.outputs['Out'])
-        self.place = core.CUDAPlace(0)
+        self.place = get_device_place()
 
     def test_check_output(self):
         self.check_output_with_place(self.place, check_pir=True)
@@ -156,8 +162,8 @@ class TestTraceBF16Op1(OpTest):
 
 
 @unittest.skipIf(
-    not core.is_compiled_with_cuda()
-    or not core.is_bfloat16_supported(core.CUDAPlace(0)),
+    not (core.is_compiled_with_cuda() or is_custom_device())
+    or not core.is_bfloat16_supported(get_device_place()),
     "core is not compiled with CUDA or not support bfloat16",
 )
 class TestTraceBF16Op2(TestTraceBF16Op1):
@@ -176,7 +182,6 @@ class TestTraceBF16Op2(TestTraceBF16Op1):
 
 
 class TestTraceAPICase(unittest.TestCase):
-
     def test_case1(self):
         with paddle.static.program_guard(paddle.static.Program()):
             case = np.random.randn(2, 20, 2, 3).astype('float32')
@@ -202,9 +207,7 @@ class TestTraceAPICase(unittest.TestCase):
 
 class TestTraceAPIZerodimCase(unittest.TestCase):
     def setUp(self):
-        self.places = [paddle.CPUPlace()]
-        if paddle.is_compiled_with_cuda():
-            self.places.append(paddle.CUDAPlace(0))
+        self.places = get_places()
         self.x = np.random.random([5, 0, 0, 0]).astype('float32')
 
     def test_dygraph(self):
@@ -261,6 +264,22 @@ class TestTraceAPIZerodimCase(unittest.TestCase):
                 target = np.trace(case, offset=offset, axis1=axis1, axis2=axis2)
                 self.assertEqual(tuple(result.shape), target.shape)
                 np.testing.assert_allclose(result, target, rtol=1e-5)
+
+
+# Test alias for 'input'
+class TestTraceAlias(unittest.TestCase):
+    def test_alias(self):
+        with base.dygraph.guard():
+            x_np = np.random.random((3, 3)).astype("float32")
+            x = paddle.to_tensor(x_np)
+
+            # 1. Standard call
+            out_ref = paddle.trace(x)
+
+            # 2. Test alias: input -> x
+            out_alias = paddle.trace(input=x)
+
+            np.testing.assert_array_equal(out_ref.numpy(), out_alias.numpy())
 
 
 if __name__ == "__main__":

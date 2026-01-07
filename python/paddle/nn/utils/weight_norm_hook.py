@@ -137,9 +137,9 @@ class WeightNorm:
 
         # support dim is negative number, (dim = -1) == (dim = None)
         weight_dim = len(layer._parameters[name].shape)
-        assert (
-            dim < weight_dim and dim >= -1 * weight_dim
-        ), "dim must set between [-R, R), R means the dimension of weight."
+        assert dim < weight_dim and dim >= -1 * weight_dim, (
+            "dim must set between [-R, R), R means the dimension of weight."
+        )
         if dim != -1:
             dim = (dim + weight_dim) % weight_dim
 
@@ -205,7 +205,7 @@ def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
         Origin layer with weight norm hook.
 
     Examples:
-        .. code-block:: python
+        .. code-block:: pycon
 
           >>> from paddle.nn import Conv2D
           >>> from paddle.nn.utils import weight_norm
@@ -213,9 +213,9 @@ def weight_norm(layer: Layer, name: str = 'weight', dim: int = 0) -> Layer:
           >>> conv = Conv2D(3, 5, 3)
           >>> wn = weight_norm(conv)
           >>> print(conv.weight_g.shape)
-          [5]
+          paddle.Size([5])
           >>> print(conv.weight_v.shape)
-          [5, 3, 3, 3]
+          paddle.Size([5, 3, 3, 3])
     """
     WeightNorm.apply(layer, name, dim)
     return layer

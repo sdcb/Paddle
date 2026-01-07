@@ -259,17 +259,17 @@ SpmdInfo LayerNormInferSpmdReverse(const DistMetaTensor& x,
   VLOG(4) << "Out"
           << " shape: [" << str_join(out_shape) << "] "
           << " src_dims_mapping: [" << str_join(out_dims_mapping) << "] "
-          << "dst_dims_mapping: ["
+          << " dst_dims_mapping: ["
           << str_join(output_dist_attrs[0].dims_mapping()) << "]";
   VLOG(4) << "Mean"
           << " shape: [" << str_join(mean_shape) << "] "
           << " src_dims_mapping: [" << str_join(mean_dims_mapping) << "] "
-          << "dst_dims_mapping: ["
+          << " dst_dims_mapping: ["
           << str_join(output_dist_attrs[1].dims_mapping()) << "]";
   VLOG(4) << "Variance"
           << " shape: [" << str_join(variance_shape) << "] "
           << " src_dims_mapping: [" << str_join(variance_dims_mapping) << "] "
-          << "dst_dims_mapping: ["
+          << " dst_dims_mapping: ["
           << str_join(output_dist_attrs[2].dims_mapping()) << "]";
 
   for (int i = 0, n = static_cast<int>(input_dist_attrs.size()); i < n; i++) {
@@ -416,8 +416,12 @@ SpmdInfo LayerNormGradInferSpmd(const DistMetaTensor& x,
       partial_on_dims.push_back(mapping);
     }
   }
-  scale_grad_dist_attr.set_partial_status(partial_on_dims);
-  bias_grad_dist_attr.set_partial_status(partial_on_dims);
+  if (!scale_grad_dist_attr.empty()) {
+    scale_grad_dist_attr.set_partial_status(partial_on_dims);
+  }
+  if (!bias_grad_dist_attr.empty()) {
+    bias_grad_dist_attr.set_partial_status(partial_on_dims);
+  }
 
   VLOG(4) << "LayerNormGradInferSpmd:";
   VLOG(4) << "begin_norm_axis: " << begin_norm_axis;

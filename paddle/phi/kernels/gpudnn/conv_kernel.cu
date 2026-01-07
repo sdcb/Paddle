@@ -29,8 +29,6 @@
 #endif
 
 #include "paddle/phi/backends/gpu/cuda/cudnn_workspace_helper.h"
-#include "paddle/phi/common/bfloat16.h"
-#include "paddle/phi/common/float16.h"
 #include "paddle/phi/kernels/cpu/conv_util.h"
 #include "paddle/phi/kernels/funcs/batch_norm_utils.h"
 #include "paddle/phi/kernels/funcs/padding.h"
@@ -47,9 +45,9 @@
 #include "paddle/common/flags.h"
 
 COMMON_DECLARE_bool(manually_trans_conv_filter);
+COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
 
 namespace phi {
-
 template <typename T, typename Context>
 void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
                            const DenseTensor* transformed_filter_channel,
@@ -57,8 +55,8 @@ void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
                            const std::vector<int>& strides,
                            const std::vector<int>& padding_common,
                            const std::vector<int>& dilations,
-                           phi::backends::gpu::DataLayout compute_format,
-                           phi::backends::gpu::DataLayout layout,
+                           DataLayout compute_format,
+                           DataLayout layout,
                            bool exhaustive_search,
                            bool deterministic,
                            int groups,
@@ -94,7 +92,7 @@ void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
       dtype, padding_common, strides, dilations, phi::AllowTF32Cudnn());
 #endif
 
-#if defined(PADDLE_WITH_CUDA) && CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_CUDA)
   // cudnn 7 can support groups, no need to do it manually
   // FIXME(typhoonzero): find a better way to disable groups
   // rather than setting it to 1.
@@ -112,16 +110,16 @@ void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
   int i_n, i_c, i_d, i_h, i_w;
   int o_n, o_c, o_d, o_h, o_w;
 
-  if (compute_format == phi::backends::gpu::DataLayout::kNHWC) {
+  if (compute_format == DataLayout::NHWC) {
     GetNCDHW(transformed_input->dims(),
-             phi::backends::gpu::DataLayout::kNHWC,
+             DataLayout::NHWC,
              &i_n,
              &i_c,
              &i_d,
              &i_h,
              &i_w);
     GetNCDHW(transformed_output->dims(),
-             phi::backends::gpu::DataLayout::kNHWC,
+             DataLayout::NHWC,
              &o_n,
              &o_c,
              &o_d,
@@ -129,14 +127,14 @@ void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
              &o_w);
   } else {
     GetNCDHW(transformed_input->dims(),
-             phi::backends::gpu::DataLayout::kNCHW,
+             DataLayout::NCHW,
              &i_n,
              &i_c,
              &i_d,
              &i_h,
              &i_w);
     GetNCDHW(transformed_output->dims(),
-             phi::backends::gpu::DataLayout::kNCHW,
+             DataLayout::NCHW,
              &o_n,
              &o_c,
              &o_d,
@@ -163,7 +161,7 @@ void ConvCudnnKernelImplV7(const DenseTensor* transformed_input,
   workspace_size = fwd_result.workspace_size;
 #endif
 
-#if defined(PADDLE_WITH_CUDA) && CUDNN_VERSION_MIN(7, 0, 1)
+#if defined(PADDLE_WITH_CUDA)
   // when groups > 1, SearchAlgorithm find algo is CUDNN_CONVOLUTION_\
     // FWD_ALGO_WINOGRAD_NONFUSED, but this kind of algorithm is unstable
   // in forward computation, so change the algorithm to CUDNN_CONVOLUTION_\
@@ -225,19 +223,13 @@ void ConvCudnnKernelImplV8(const DenseTensor* input_tensor,
                            const std::vector<int>& strides,
                            const std::vector<int>& padding_common,
                            const std::vector<int>& dilations,
-                           phi::backends::gpu::DataLayout layout,
+                           DataLayout layout,
                            bool exhaustive_search,
                            bool deterministic,
                            int groups,
                            DenseTensor* output_tensor) {
   auto& plan_cache = phi::autotune::AutoTuneCache::Instance().GetConvV8(
       phi::autotune::AlgorithmType::kConvForwardV8);
-
-  PADDLE_ENFORCE_EQ(
-      groups,
-      1,
-      common::errors::Unimplemented(
-          "Group concolution using CUDNNv8 API unsupported for now"));
 
   T* input_data = const_cast<T*>(input_tensor->data<T>());
   T* filter_data = const_cast<T*>(filter_channel_tensor->data<T>());
@@ -313,9 +305,8 @@ void ConvCudnnKernel(const Context& dev_ctx,
                      int groups,
                      const std::string& data_format,
                      DenseTensor* output) {
-  if (input.numel() == 0) {
-    phi::Full<T, Context>(
-        dev_ctx, phi::IntArray(common::vectorize(output->dims())), 0, output);
+  if (input.numel() == 0 || filter.numel() == 0) {
+    Full<T, Context>(dev_ctx, output->dims(), 0, output);
     return;
   }
   dev_ctx.template Alloc<T>(output);
@@ -343,14 +334,14 @@ void ConvCudnnKernel(const Context& dev_ctx,
 
 #ifdef PADDLE_WITH_HIP
   // HIP MIOPEN ONLY SUPPORT NCHW format
-  auto compute_format = phi::backends::gpu::DataLayout::kNCHW;
+  auto compute_format = DataLayout::NCHW;
 #else
 #if CUDNN_VERSION_MIN(8, 1, 0)
-  // Tensor Core introduced from Volta GPUs supports more faster conv op
-  // with FP16 or BF16 in NHWC data format.
   const bool compute_in_nhwc =
-      (dtype == CUDNN_DATA_HALF || dtype == CUDNN_DATA_BFLOAT16) &&
-      IsVoltaOrLater(dev_ctx);
+      FLAGS_use_accuracy_compatible_kernel
+          ? channel_last
+          : ((dtype == CUDNN_DATA_HALF || dtype == CUDNN_DATA_BFLOAT16) &&
+             IsVoltaOrLater(dev_ctx));
 #else
   // Tensor Core introduced from Volta GPUs supports more faster conv op
   // with FP16 in NHWC data format. (BF16 require cudnn >= 8.1.0)
@@ -359,21 +350,19 @@ void ConvCudnnKernel(const Context& dev_ctx,
 #endif
   // We will only do data format conversion from NHWC to NCHW.
   // cudnn will convert NCHW to NHWC automatically on Tensor Core.
-  auto compute_format = compute_in_nhwc && channel_last
-                            ? phi::backends::gpu::DataLayout::kNHWC
-                            : phi::backends::gpu::DataLayout::kNCHW;
+  auto compute_format =
+      compute_in_nhwc && channel_last ? DataLayout::NHWC : DataLayout::NCHW;
 #endif
   VLOG(3) << "Compute ConvOp with cuDNN:"
           << " data_format=" << data_format << " compute_format="
-          << (compute_format == phi::backends::gpu::DataLayout::kNHWC ? "NHWC"
-                                                                      : "NCHW");
+          << (compute_format == DataLayout::NHWC ? "NHWC" : "NCHW");
 
   // ------------ transformed tensor -----------
   DenseTensor transformed_input_channel(input.type());
   DenseTensor transformed_output(output->type());
   DenseTensor transformed_filter_channel(filter.type());
 
-  if (channel_last && compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+  if (channel_last && compute_format == DataLayout::NCHW) {
     VLOG(3) << "Transform input tensor from NHWC to NCHW.";
     ResizeToChannelFirst<Context, T>(
         dev_ctx, &input, &transformed_input_channel);
@@ -386,8 +375,7 @@ void ConvCudnnKernel(const Context& dev_ctx,
     transformed_input_channel.ShareDataWith(input);
     transformed_output.ShareDataWith(*output);
   }
-  if (compute_format == phi::backends::gpu::DataLayout::kNHWC &&
-      !FLAGS_manually_trans_conv_filter) {
+  if (compute_format == DataLayout::NHWC && !FLAGS_manually_trans_conv_filter) {
     VLOG(3) << "Transform filter tensor from NCHW to NHWC.";
     ResizeToChannelLast<Context, T>(
         dev_ctx, &filter, &transformed_filter_channel);
@@ -403,7 +391,7 @@ void ConvCudnnKernel(const Context& dev_ctx,
   DDim in_data_dims;
   DDim filter_data_dims;
 
-  if (compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+  if (compute_format == DataLayout::NCHW) {
     in_data_dims = slice_ddim(in_dims, 2, in_dims.size());
     filter_data_dims = slice_ddim(filter_dims, 2, filter_dims.size());
   } else {
@@ -425,7 +413,7 @@ void ConvCudnnKernel(const Context& dev_ctx,
     std::vector<int> new_input_shape_vec(data_dim + 2);
     new_input_shape_vec[0] = transformed_input_channel.dims()[0];
 
-    if (compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+    if (compute_format == DataLayout::NCHW) {
       new_input_shape_vec[1] = transformed_input_channel.dims()[1];
     } else {
       new_input_shape_vec[data_dim + 1] =
@@ -436,14 +424,14 @@ void ConvCudnnKernel(const Context& dev_ctx,
     for (size_t i = 0; i < data_dim; ++i) {
       padding_diff[i] = std::abs(paddings[2 * i] - paddings[2 * i + 1]);
       padding_common[i] = std::min(paddings[2 * i], paddings[2 * i + 1]);
-      if (compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+      if (compute_format == DataLayout::NCHW) {
         new_input_shape_vec[i + 2] =
             transformed_input_channel.dims()[i + 2] + padding_diff[i];
       } else {
         new_input_shape_vec[i + 1] =
             transformed_input_channel.dims()[i + 1] + padding_diff[i];
       }
-      if (compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+      if (compute_format == DataLayout::NCHW) {
         input_pad[2 * i + 4] = paddings[2 * i] - padding_common[i];
         input_pad[2 * i + 4 + 1] = paddings[2 * i + 1] - padding_common[i];
       } else {
@@ -490,21 +478,19 @@ void ConvCudnnKernel(const Context& dev_ctx,
     }
   }
 
-  phi::backends::gpu::DataLayout layout =
-      compute_format == phi::backends::gpu::DataLayout::kNHWC
-          ? phi::backends::gpu::DataLayout::kNHWC
-          : phi::backends::gpu::DataLayout::kNCHW;
+  DataLayout layout =
+      compute_format == DataLayout::NHWC ? DataLayout::NHWC : DataLayout::NCHW;
   if (transformed_input.dims().size() == 5) {
-    layout = compute_format == phi::backends::gpu::DataLayout::kNHWC
-                 ? phi::backends::gpu::DataLayout::kNDHWC
-                 : phi::backends::gpu::DataLayout::kNCDHW;
+    layout = compute_format == DataLayout::NHWC ? DataLayout::NDHWC
+                                                : DataLayout::NCDHW;
   }
 
   CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_input);
   CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_filter_channel);
   CUDNN_ENFORCE_TENSOR_SIZE_SUPPORTED(transformed_output);
 #ifdef PADDLE_WITH_CUDNN_FRONTEND
-  if (dynload::IsCudnnFrontendEnabled() && (groups == 1))
+  if (dynload ::IsCudnnFrontendEnabled() &&
+      (FLAGS_use_accuracy_compatible_kernel || groups == 1))
     ConvCudnnKernelImplV8<T>(&transformed_input,
                              &transformed_filter_channel,
                              dev_ctx,
@@ -544,7 +530,7 @@ void ConvCudnnKernel(const Context& dev_ctx,
                            &transformed_output);
 #endif
 
-  if (channel_last && compute_format == phi::backends::gpu::DataLayout::kNCHW) {
+  if (channel_last && compute_format == DataLayout::NCHW) {
     TransToChannelLast<Context, T>(dev_ctx, &transformed_output, output);
   }
 }
@@ -574,26 +560,18 @@ void Conv3DCudnnKernel(const Context& dev_ctx,
 }  // namespace phi
 
 #ifdef PADDLE_WITH_HIP
-PD_REGISTER_KERNEL(conv2d,
-                   GPUDNN,
-                   ALL_LAYOUT,
-                   phi::ConvCudnnKernel,
-                   float,
-                   phi::dtype::float16) {}
+PD_REGISTER_KERNEL(
+    conv2d, GPUDNN, ALL_LAYOUT, phi::ConvCudnnKernel, float, phi::float16) {}
 
-PD_REGISTER_KERNEL(conv3d,
-                   GPUDNN,
-                   ALL_LAYOUT,
-                   phi::Conv3DCudnnKernel,
-                   float,
-                   phi::dtype::float16) {}
+PD_REGISTER_KERNEL(
+    conv3d, GPUDNN, ALL_LAYOUT, phi::Conv3DCudnnKernel, float, phi::float16) {}
 
 PD_REGISTER_KERNEL(depthwise_conv2d,
                    GPUDNN,
                    ALL_LAYOUT,
                    phi::DepthwiseConvCudnnKernel,
                    float,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 #else
 #if CUDNN_VERSION_MIN(8, 1, 0)
@@ -603,8 +581,8 @@ PD_REGISTER_KERNEL(conv2d,
                    phi::ConvCudnnKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 
 PD_REGISTER_KERNEL(conv3d,
                    GPUDNN,
@@ -612,8 +590,8 @@ PD_REGISTER_KERNEL(conv3d,
                    phi::Conv3DCudnnKernel,
                    float,
                    double,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float16,
+                   phi::bfloat16) {}
 #elif CUDNN_VERSION_MIN(8, 6, 0) && CUDA_VERSION >= 11800 && \
     defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
 PD_REGISTER_KERNEL(conv2d,
@@ -622,9 +600,9 @@ PD_REGISTER_KERNEL(conv2d,
                    phi::ConvCudnnKernel,
                    float,
                    double,
-                   phi::dtype::float8_e4m3fn,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16) {}
+                   phi::float8_e4m3fn,
+                   phi::float16,
+                   phi::bfloat16) {}
 #else
 PD_REGISTER_KERNEL(conv2d,
                    GPUDNN,
@@ -632,7 +610,7 @@ PD_REGISTER_KERNEL(conv2d,
                    phi::ConvCudnnKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 
 PD_REGISTER_KERNEL(conv3d,
                    GPUDNN,
@@ -640,7 +618,7 @@ PD_REGISTER_KERNEL(conv3d,
                    phi::Conv3DCudnnKernel,
                    float,
                    double,
-                   phi::dtype::float16) {}
+                   phi::float16) {}
 #endif
 
 #endif

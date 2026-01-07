@@ -68,7 +68,7 @@ void hardswish_grad(const Tensor& x, const Tensor& out_grad, Tensor* x_grad) {
 template <typename T>
 void leaky_relu_grad(const Tensor& out,
                      const Tensor& out_grad,
-                     float negative_slope,
+                     double negative_slope,
                      Tensor* x_grad) {
   if (x_grad) {
     auto condition = greater_than<T>(
@@ -145,57 +145,6 @@ void cast_grad(const Tensor& x, const Tensor& out_grad, Tensor* x_grad) {
     auto res = cast<T>(out_grad, x.dtype());
     set_output<T>(res, x_grad);
   }
-}
-
-template <typename T>
-void gather_grad(const Tensor& x,
-                 const Tensor& index,
-                 const Tensor& out_grad,
-                 const Scalar& axis,
-                 Tensor* grad_x) {
-  auto zero_tensor =
-      full<T>(common::vectorize(x.dims()), 0.0, x.dtype(), x.place());
-  std::vector<int> tmp_perm;
-
-  // change axis to rank 0
-  int axis_value = axis.to<int>();
-  int rank = x.dims().size();
-  if (axis_value < 0) {
-    axis_value += rank;
-  }
-  tmp_perm.push_back(axis_value);
-  // make other ranks
-  for (int i = 0; i < rank; ++i) {
-    if (i != axis_value) {
-      tmp_perm.push_back(i);
-    }
-  }
-  std::vector<int> reverse_perm(tmp_perm);
-  // make origin ranks
-  for (int i = 0; i < static_cast<int>(tmp_perm.size()); ++i) {
-    if (tmp_perm[i] >= 0) {
-      reverse_perm[tmp_perm[i]] = i;
-    } else {
-      reverse_perm[tmp_perm[i] + tmp_perm.size()] = i;
-    }
-  }
-
-  // transpose out_grad and zero grad to target rank.
-  auto tmp_zero_x_grad = zero_tensor;
-  auto tmp_out_grad = out_grad;
-  if (zero_tensor.dims().size() > 0) {
-    tmp_zero_x_grad = transpose<T>(zero_tensor, tmp_perm);
-  }
-  if (out_grad.dims().size() > 0) {
-    tmp_out_grad = transpose<T>(out_grad, tmp_perm);
-  }
-  // scatter grad to grad_x
-  auto tmp_grad_x = scatter<T>(tmp_zero_x_grad, index, tmp_out_grad, false);
-  auto tmp_grad_x_transposed = tmp_grad_x;
-  if (tmp_grad_x.dims().size() > 0) {
-    tmp_grad_x_transposed = transpose<T>(tmp_grad_x, reverse_perm);
-  }
-  set_output<T>(tmp_grad_x_transposed, grad_x);
 }
 
 template <typename T>
@@ -710,8 +659,8 @@ void expand_grad(const Tensor& x,
 template <typename T>
 void log_grad(const Tensor& x, const Tensor& out_grad, Tensor* x_grad) {
   if (x_grad) {
-    // dx = dout / x
-    set_output<T>(out_grad / x, x_grad);
+    // dx = dout / conj(x) for complex; equals dout / x for real
+    set_output<T>(out_grad / conj<T>(x), x_grad);
   }
 }
 
@@ -868,7 +817,7 @@ void group_norm_grad(const Tensor& x,
   // cal d_bias:
   // d_bias = sum(dy, axes=(0,2,3))
   DataLayout data_layout_ = common::StringToDataLayout(data_layout);
-  if (data_layout_ != DataLayout::kNCHW) {
+  if (data_layout_ != DataLayout::NCHW) {
     PADDLE_THROW(common::errors::InvalidArgument(
         "Unsupported storage order: %s", data_layout));
   }
@@ -1619,8 +1568,8 @@ void batch_norm_grad(const Tensor& x,
   }
 
   auto x_dims = x_data.dims();
-  const int C = (data_layout_ == DataLayout::kNCHW ? x_dims[1]
-                                                   : x_dims[x_dims.size() - 1]);
+  const int C = (data_layout_ == DataLayout::NCHW ? x_dims[1]
+                                                  : x_dims[x_dims.size() - 1]);
   int nume = 1;
   for (auto i = 0; i < x_dims.size(); i++) {
     nume = nume * x_dims[i];
@@ -1628,8 +1577,8 @@ void batch_norm_grad(const Tensor& x,
 
   const int nhw = nume / C;
 
-  if (x_dims.size() == 2 && data_layout_ == DataLayout::kNCHW) {
-    data_layout_ = DataLayout::kNHWC;
+  if (x_dims.size() == 2 && data_layout_ == DataLayout::NCHW) {
+    data_layout_ = DataLayout::NHWC;
   }
 
   auto run_var = variance_out.get();
@@ -1670,7 +1619,7 @@ void batch_norm_grad(const Tensor& x,
   auto dtype = x_data.dtype();
 
   switch (data_layout_) {
-    case DataLayout::kNCHW: {
+    case DataLayout::NCHW: {
       auto nhwc_x = transpose<T>(x_data, nchw_to_nhwc_dim);
       auto nhwc_out_grad = transpose<T>(out_grad_data, nchw_to_nhwc_dim);
       auto nhwc_out_grad_sum = sum<T>(nhwc_out_grad, reduce_axis, dtype, false);
@@ -1716,7 +1665,7 @@ void batch_norm_grad(const Tensor& x,
       }
       break;
     }
-    case DataLayout::kNHWC: {
+    case DataLayout::NHWC: {
       if (x_grad) {
         auto out_grad_data_sum =
             sum<T>(out_grad_data, reduce_axis, dtype, false);
@@ -1768,6 +1717,7 @@ void batch_norm_grad(const Tensor& x,
 template <typename T>
 void instance_norm_grad(const Tensor& x,
                         const paddle::optional<Tensor>& scale,
+                        const paddle::optional<Tensor>& bias UNUSED,
                         const Tensor& saved_mean,
                         const Tensor& saved_variance,
                         const Tensor& y_grad,
@@ -1775,10 +1725,21 @@ void instance_norm_grad(const Tensor& x,
                         Tensor* x_grad,
                         Tensor* scale_grad,
                         Tensor* bias_grad) {
-  const int n = x.dims()[0];
-  const int c = x.dims()[1];
-  const int h = x.dims()[2];
-  const int w = x.dims()[3];
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t n = x.dims()[0];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t c = x.dims()[1];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t h = x.dims()[2];
+
+  // TODO(large-tensor): downstream functors may still use int; guard until
+  // upgraded.
+  int64_t w = x.dims()[3];
 
   auto promoted_y_grad = y_grad;
   if (x.dtype() == phi::DataType::FLOAT16 ||

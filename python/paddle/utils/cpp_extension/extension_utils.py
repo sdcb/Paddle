@@ -31,10 +31,7 @@ import sysconfig
 import textwrap
 import threading
 import warnings
-from contextlib import contextmanager
 from importlib import machinery
-
-from setuptools.command import bdist_egg
 
 try:
     from subprocess import DEVNULL  # py3
@@ -151,21 +148,10 @@ DEFAULT_OP_ATTR_NAMES = [
 ]
 
 
-@contextmanager
-def bootstrap_context():
-    """
-    Context to manage how to write `__bootstrap__` code in .egg
-    """
-    origin_write_stub = bdist_egg.write_stub
-    bdist_egg.write_stub = custom_write_stub
-    yield
-
-    bdist_egg.write_stub = origin_write_stub
-
-
 def load_op_meta_info_and_register_op(lib_filename: str) -> list[str]:
-    core.load_op_meta_info_and_register_op(lib_filename)
-    return OpProtoHolder.instance().update_op_proto()
+    new_list = core.load_op_meta_info_and_register_op(lib_filename)
+    proto_sync_ops = OpProtoHolder.instance().update_op_proto(new_list)
+    return proto_sync_ops
 
 
 def custom_write_stub(resource, pyfile):
@@ -236,7 +222,8 @@ def custom_write_stub(resource, pyfile):
     with open(pyfile, 'w') as f:
         f.write(
             _stub_template.format(
-                resource=resource, custom_api='\n\n'.join(api_content)
+                resource=os.path.basename(resource),
+                custom_api='\n\n'.join(api_content),
             )
         )
 
@@ -256,9 +243,9 @@ class CustomOpInfo:
         return cls._instance
 
     def __init__(self):
-        assert not hasattr(
-            self.__class__, '_instance'
-        ), 'Please use `instance()` to get CustomOpInfo object!'
+        assert not hasattr(self.__class__, '_instance'), (
+            'Please use `instance()` to get CustomOpInfo object!'
+        )
         # NOTE(Aurelius84): Use OrderedDict to save more order information
         self.op_info_map = collections.OrderedDict()
 
@@ -394,6 +381,8 @@ def prepare_unix_cudaflags(cflags):
             *cflags,
             *get_rocm_arch_flags(cflags),
         ]
+    elif core.is_compiled_with_custom_device("iluvatar_gpu"):
+        cflags = [*COMMON_NVCC_FLAGS, '-fPIC', '-DPADDLE_WITH_COREX', *cflags]
     else:
         cflags = [
             *COMMON_NVCC_FLAGS,
@@ -483,11 +472,9 @@ def _get_lib_core_path():
 
 def _get_dll_core_path():
     """
-    Return real path of libcore_(no)avx.dylib on Windows.
+    Return real path of libpaddle on Windows.
     """
-    raw_core_name = _get_core_name()
-    dll_core_name = "libpaddle.dll"
-    return os.path.join(_get_base_path(), dll_core_name)
+    return os.path.join(_get_base_path(), "libpaddle.dll")
 
 
 def _reset_so_rpath(so_path):
@@ -519,9 +506,9 @@ def _get_include_dirs_when_compiling(compile_dir):
     include_dirs_file = 'includes.txt'
     path = os.path.abspath(compile_dir)
     include_dirs_file = os.path.join(path, include_dirs_file)
-    assert os.path.isfile(
-        include_dirs_file
-    ), f"File {include_dirs_file} does not exist"
+    assert os.path.isfile(include_dirs_file), (
+        f"File {include_dirs_file} does not exist"
+    )
     with open(include_dirs_file, 'r') as f:
         include_dirs = [line.strip() for line in f if line.strip()]
 
@@ -552,7 +539,9 @@ def normalize_extension_kwargs(kwargs, use_cuda=False):
 
     # append necessary include dir path of paddle
     include_dirs = list(kwargs.get('include_dirs', []))
+    include_dirs = [os.fsdecode(include_dir) for include_dir in include_dirs]
     include_dirs.extend(compile_include_dirs)
+    include_dirs.extend(find_paddle_custom_device_includes())
     include_dirs.extend(find_paddle_includes(use_cuda))
     include_dirs.extend(find_python_includes())
 
@@ -586,7 +575,15 @@ def normalize_extension_kwargs(kwargs, use_cuda=False):
         # On Linux, GCC support '-l:xxx.so' to specify the library name
         # without `lib` prefix.
         if OS_NAME.startswith('linux'):
-            extra_link_args.append(f'-l:{_get_core_name()}')
+            # Force link libpaddle.so to avoid "as-needed" optimization
+            # when user only uses phi headers.
+            extra_link_args.extend(
+                [
+                    '-Wl,--no-as-needed',
+                    f'-l:{_get_core_name()}',
+                    '-Wl,--as-needed',
+                ]
+            )
         # ----------------------- MacOS Platform ----------------------- #
         else:
             # See _reset_so_rpath for details.
@@ -711,7 +708,7 @@ def find_ccache_home():
 
     if ccache_path is None:
         warning_message = "No ccache found. Please be aware that recompiling all source files may be required. "
-        warning_message += "You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/INSTALL.md"
+        warning_message += "You can download and install ccache from: https://github.com/ccache/ccache/blob/master/doc/install.md"
         warnings.warn(warning_message)
 
     return ccache_path
@@ -724,7 +721,7 @@ def find_cuda_home():
     # step 1. find in $CUDA_HOME or $CUDA_PATH
     cuda_home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
 
-    # step 2.  find path by `which nvcc`
+    # step 2. find path by `which nvcc`
     if cuda_home is None:
         which_cmd = 'where' if IS_WINDOWS else 'which'
         try:
@@ -766,7 +763,7 @@ def find_rocm_home():
     # step 1. find in $ROCM_HOME or $ROCM_PATH
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
 
-    # step 2.  find path by `which nvcc`
+    # step 2. find path by `which nvcc`
     if rocm_home is None:
         which_cmd = 'where' if IS_WINDOWS else 'which'
         try:
@@ -801,8 +798,12 @@ def find_cuda_includes():
         raise ValueError(
             "Not found CUDA runtime, please use `export CUDA_HOME=XXX` to specific it."
         )
+    base_include = os.path.join(cuda_home, 'include')
 
-    return [os.path.join(cuda_home, 'include')]
+    sub_dirs = ['', 'cccl', 'nvtx3']
+
+    paths = [os.path.join(base_include, sub) for sub in sub_dirs]
+    return [p for p in paths if os.path.exists(p)]
 
 
 def find_rocm_includes():
@@ -818,14 +819,35 @@ def find_rocm_includes():
     return [os.path.join(rocm_home, 'include')]
 
 
+def _get_all_paddle_includes_from_include_root(
+    include_root: os.PathLike[str] | str,
+) -> list[str]:
+    """
+    Get all paddle include directories from include root (packaged in wheel)
+    """
+    third_party_dir = os.path.join(include_root, 'third_party')
+    include_dirs = [include_root, third_party_dir]
+    if not IS_WINDOWS:
+        compat_dir_root = os.path.join(
+            include_root, 'paddle/phi/api/include/compat'
+        )
+        compat_dir_api_include = os.path.join(
+            include_root,
+            'paddle/phi/api/include/compat/torch/csrc/api/include',
+        )
+        include_dirs.extend([compat_dir_root, compat_dir_api_include])
+    return include_dirs
+
+
 def find_paddle_includes(use_cuda=False):
     """
     Return Paddle necessary include dir path.
     """
     # pythonXX/site-packages/paddle/include
     paddle_include_dir = get_include()
-    third_party_dir = os.path.join(paddle_include_dir, 'third_party')
-    include_dirs = [paddle_include_dir, third_party_dir]
+    include_dirs = _get_all_paddle_includes_from_include_root(
+        paddle_include_dir
+    )
 
     if use_cuda:
         if core.is_compiled_with_rocm():
@@ -841,6 +863,31 @@ def find_paddle_includes(use_cuda=False):
         if std_v1_includes is not None and os.path.exists(std_v1_includes):
             include_dirs.append(std_v1_includes)
 
+    return include_dirs
+
+
+def find_paddle_custom_device_includes():
+    """
+    Return Paddle Custom Device necessary include dir path.
+    """
+    include_dirs = []
+    devices = core.get_all_device_type()
+
+    if not devices:
+        return include_dirs
+
+    device = devices[-1]
+    if core.is_compiled_with_custom_device(device):
+        custom_device_root = os.getenv("CUSTOM_DEVICE_ROOT")
+        if custom_device_root:
+            include_dir = os.path.join(custom_device_root, "include")
+            if os.path.exists(include_dir):
+                include_dirs.append(include_dir)
+        else:
+            raise ValueError(
+                "Not found CUSTOM_DEVICE_ROOT, please use `export CUSTOM_DEVICE_ROOT=XXX` to specific it."
+            )
+        return include_dirs
     return include_dirs
 
 
@@ -940,6 +987,14 @@ def add_compile_flag(extra_compile_args, flags):
             args.extend(flags)
     else:
         extra_compile_args.extend(flags)
+
+
+def define_paddle_extension_name(extension):
+    # Allow user use PADDLE_EXTENSION_NAME to access shared library name
+    names = extension.name.split('.')
+    name = names[-1]
+    define = f'-DPADDLE_EXTENSION_NAME={name}'
+    add_compile_flag(extension.extra_compile_args, [define])
 
 
 def is_cuda_file(path):
@@ -1069,7 +1124,7 @@ def _generate_python_module(
 
     # NOTE: Use unique id as suffix to avoid write same file at same time in
     # both multi-thread and multi-process.
-    thread_id = str(threading.currentThread().ident)
+    thread_id = str(threading.current_thread().ident)
     api_file = os.path.join(
         build_directory, module_name + '_' + thread_id + '.py'
     )
@@ -1078,7 +1133,7 @@ def _generate_python_module(
     # delete the temp file before exit python process
     atexit.register(lambda: remove_if_exit(api_file))
 
-    # write into .py file with RWLockc
+    # write into .py file with RWLock
     api_content = [_custom_api_content(op_name) for op_name in op_names]
     with open(api_file, 'w') as f:
         f.write('\n\n'.join(api_content))
