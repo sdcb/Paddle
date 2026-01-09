@@ -52,7 +52,7 @@ file(
 
 file(
   WRITE ${BOX_PS_DOWNLOAD_DIR}/CMakeLists.txt
-  "PROJECT(BOX_PS)\n" "cmake_minimum_required(VERSION 3.0)\n"
+  "PROJECT(BOX_PS)\n" "cmake_minimum_required(VERSION 3.5)\n"
   "install(DIRECTORY ./include ./lib \n"
   "        DESTINATION ${BOX_PS_DST_DIR})\n")
 ExternalProject_Add(
@@ -67,6 +67,7 @@ ExternalProject_Add(
           ${BOX_PS_INSTALL_DIR}
   CMAKE_ARGS -DCMAKE_INSTALL_PREFIX=${BOX_PS_INSTALL_ROOT}
              -DCMAKE_BUILD_TYPE=${THIRD_PARTY_BUILD_TYPE}
+         ${EXTERNAL_OPTIONAL_ARGS}
   CMAKE_CACHE_ARGS -DCMAKE_INSTALL_PREFIX:PATH=${BOX_PS_INSTALL_ROOT}
                    -DCMAKE_BUILD_TYPE=${THIRD_PARTY_BUILD_TYPE}
   BUILD_BYPRODUCTS ${BOX_PS_LIB})
