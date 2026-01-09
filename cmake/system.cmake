@@ -104,3 +104,12 @@ set(EXTERNAL_PROJECT_LOG_ARGS
     LOG_INSTALL
     0 # Wrap install in script to log output
 )
+
+# Optional arguments for third-party ExternalProject builds.
+# Newer CMake versions (e.g. 3.29+) may drop compatibility for very old
+# cmake_minimum_required() values (<3.5). Many vendored third-party projects
+# are pinned to older CMakeLists.txt and need this to configure.
+set(EXTERNAL_OPTIONAL_ARGS "")
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.29")
+  list(APPEND EXTERNAL_OPTIONAL_ARGS -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+endif()
