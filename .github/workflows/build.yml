@@ -126,6 +126,19 @@ jobs:
         cd ./paddle-src/build
         ninja all
 
+    - name: Dump gflags logs on failure
+      if: ${{ failure() }}
+      shell: bash
+      run: |
+        echo "::group::extern_gflags configure logs"
+        find ./paddle-src/build/third_party/gflags/src/extern_gflags-stamp -maxdepth 1 -name 'extern_gflags-configure-*.log' -print -exec tail -n 200 {} \; || true
+        echo "::endgroup::"
+
+        echo "::group::extern_gflags configure script"
+        ls -la ./paddle-src/build/third_party/gflags/src/extern_gflags-stamp || true
+        tail -n 200 ./paddle-src/build/third_party/gflags/src/extern_gflags-stamp/extern_gflags-configure-*.cmake || true
+        echo "::endgroup::"
+
     - name: Show build files
       shell: bash
       run: |

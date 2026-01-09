@@ -32,7 +32,11 @@ set(GLOO_LIBRARIES
     CACHE FILEPATH "gloo library." FORCE)
 
 # Setup gloo patch command
-set(GLOO_PATCH_COMMAND git checkout -- . && git checkout ${GLOO_TAG})
+# NOTE: CI may checkout submodules with --depth=1 and without tags.
+# Fetch the tag on-demand before checking it out.
+set(GLOO_PATCH_COMMAND git checkout -- . && git fetch --depth=1 origin
+                       "refs/tags/${GLOO_TAG}:refs/tags/${GLOO_TAG}" && git
+                       checkout ${GLOO_TAG})
 
 file(TO_NATIVE_PATH ${PADDLE_SOURCE_DIR}/patches/gloo/device.cc.patch
      native_dst)
