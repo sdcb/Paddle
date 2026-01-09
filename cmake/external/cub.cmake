@@ -27,8 +27,29 @@ set(CUB_SOURCE_DIR ${PADDLE_SOURCE_DIR}/third_party/cub)
 if(${CMAKE_CUDA_COMPILER_VERSION} GREATER_EQUAL 11.6)
   # cuda_11.6/11.7/11.8‘s own cub is 1.15.0, which will cause compiling error in windows.
   set(CUB_TAG 2.1.0)
-  execute_process(COMMAND git --git-dir=${CUB_SOURCE_DIR}/.git
-                          --work-tree=${CUB_SOURCE_DIR} checkout ${CUB_TAG})
+  execute_process(
+    COMMAND git --git-dir=${CUB_SOURCE_DIR}/.git --work-tree=${CUB_SOURCE_DIR}
+            checkout ${CUB_TAG}
+    RESULT_VARIABLE CUB_CHECKOUT_RESULT)
+  if(NOT CUB_CHECKOUT_RESULT EQUAL 0)
+    execute_process(
+      COMMAND git --git-dir=${CUB_SOURCE_DIR}/.git --work-tree=${CUB_SOURCE_DIR}
+              fetch --depth=1 origin refs/tags/${CUB_TAG}:refs/tags/${CUB_TAG}
+      RESULT_VARIABLE CUB_FETCH_RESULT)
+    if(NOT CUB_FETCH_RESULT EQUAL 0)
+      execute_process(
+        COMMAND git --git-dir=${CUB_SOURCE_DIR}/.git --work-tree=${CUB_SOURCE_DIR}
+                fetch --depth=1 --tags origin
+        RESULT_VARIABLE CUB_FETCH_RESULT)
+    endif()
+    execute_process(
+      COMMAND git --git-dir=${CUB_SOURCE_DIR}/.git --work-tree=${CUB_SOURCE_DIR}
+              checkout ${CUB_TAG}
+      RESULT_VARIABLE CUB_CHECKOUT_RESULT)
+    if(NOT CUB_CHECKOUT_RESULT EQUAL 0)
+      message(FATAL_ERROR "Failed to checkout cub tag ${CUB_TAG} in ${CUB_SOURCE_DIR}")
+    endif()
+  endif()
   # cub 2.1.0 is not compatible with current thrust version
   add_definitions(-DTHRUST_IGNORE_CUB_VERSION_CHECK)
   if(${CMAKE_CUDA_COMPILER_VERSION} EQUAL 11.8)
