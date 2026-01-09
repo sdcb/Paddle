@@ -53,6 +53,14 @@ else()
   if(NOT ${VERSION} STREQUAL ${CBLAS_TAG})
     message(
       WARNING "openblas version is not ${VERSION}, checkout to ${CBLAS_TAG}")
+    # Some CI checkouts (e.g. shallow submodules) may not have tags locally.
+    # Fetch the requested tag on-demand before checking it out.
+    execute_process(
+      COMMAND ${GIT_EXECUTABLE} fetch --depth=1 origin
+              "refs/tags/${CBLAS_TAG}:refs/tags/${CBLAS_TAG}"
+      WORKING_DIRECTORY ${CBLAS_SOURCE_DIR}
+      RESULT_VARIABLE OPENBLAS_FETCH_TAG_RES
+      ERROR_QUIET)
     execute_process(COMMAND ${GIT_EXECUTABLE} checkout ${CBLAS_TAG}
                     WORKING_DIRECTORY ${CBLAS_SOURCE_DIR})
   endif()
