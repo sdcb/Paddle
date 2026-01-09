@@ -42,7 +42,7 @@ jobs:
         fi
 
     - uses: Jimver/cuda-toolkit@v0.2.24
-      if: ${{ matrix.cuda != '' }}
+      if: ${{ matrix.cuda }}
       id: cuda-toolkit
       with:
         method: network
@@ -63,7 +63,7 @@ jobs:
         log-file-suffix: ${{ runner.os }}.txt
     
     - name: Download cuDNN
-      if: ${{ matrix.cudnn != '' }}
+      if: ${{ matrix.cudnn }}
       shell: pwsh
       run: |
         $cudaMajor = '${{ matrix.cuda }}'.Split('.')[0]
