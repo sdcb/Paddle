@@ -44,6 +44,7 @@ from ...utils.tensor_fusion_helper import (
     FusedCommBuffer,
     assign_group_by_size,
     fused_parameters,
+    get_group_size,
 )
 
 g_sharding_v2_check_zero_padding = int(
@@ -661,6 +662,7 @@ class DygraphShardingOptimizerV2:
 
         comm_buffer_size_MB = sharding_config.comm_buffer_size_MB
         free_grads_in_comm = sharding_config.free_grads_in_comm
+        self.offload_opt_buffer_size = sharding_config.offload_opt_buffer_size
 
         self._enable_timer = strategy.hybrid_configs["enable_optimizer_timer"]
 
@@ -729,6 +731,87 @@ class DygraphShardingOptimizerV2:
             assert not self.comm_overlap, (
                 "You should not use pipeline parallel and comm_overlap at the same time"
             )
+
+        # Register reduce overlap hook if comm_overlap is used without pp_overlap
+        if not self.pp_overlap and self.comm_overlap:
+            self.register_reduce_overlap_hook(use_comm=True)
+
+        self._all_gather_overlap_forward = False
+        self._forward_pre_hook_remove_helper = []
+        self.has_register_forward_hook = False
+
+    def rebuild(self):
+        """rebuild DygraphShardingOptimizerV2."""
+
+        self._sharding_world_size = self._hcg.get_sharding_parallel_world_size()
+        self._sharding_rank = self._hcg.get_sharding_parallel_rank()
+        self.clear_color = set()
+
+        # param name -> slice_param
+        self._slice_params = {}
+        # comm_buffer_list = []
+        self._comm_buffer_list = []
+        self._color_to_comm_buffer_list = {}
+
+        # slice parameter list
+        self._local_parameter_list = [
+            self._create_slice_param(p) for p in self._inner_opt._parameter_list
+        ]
+
+        # Accessing user defined strategy
+        strategy = fleet.fleet._user_defined_strategy
+        sharding_config = strategy.hybrid_configs['sharding_configs']
+        pp_config = strategy.hybrid_configs['pp_configs']
+
+        # Asserting tensor fusion not supported
+        self.tensor_fusion = sharding_config.tensor_fusion
+        assert not self.tensor_fusion, "not supported yet"
+
+        # Setting accumulate steps and communication overlap
+        acc_steps = sharding_config.accumulate_steps
+        self.comm_overlap = sharding_config.comm_overlap
+
+        comm_buffer_size_MB = sharding_config.comm_buffer_size_MB
+        free_grads_in_comm = sharding_config.free_grads_in_comm
+        self.offload_opt_buffer_size = sharding_config.offload_opt_buffer_size
+
+        # Setting pipeline parallelism overlap
+        self.pp_overlap = pp_config.sharding_comm_overlap
+        self.sd_release_grads = (
+            pp_config.release_gradients or sharding_config.release_gradients
+        )
+
+        # Check nccl reduce_avg setting
+        self.use_reduce_avg = sharding_config.use_reduce_avg
+        if self.use_reduce_avg and (not is_avg_reduce_op_supported()):
+            self.use_reduce_avg = False
+
+        self.enable_fuse_optimizer_states = (
+            sharding_config.enable_fuse_optimizer_states
+        )
+
+        self.param2bucket = {}
+        self._build_comm_buffers(
+            acc_steps, comm_buffer_size_MB * 1024 * 1024, free_grads_in_comm
+        )
+        if self.enable_fuse_optimizer_states:
+            self._inner_opt.use_fusion_storage()
+        # NOTE(shenliang03): Sort the comm_buffers by dst rank,
+        # it will improve the performance in reduce communicate. Default
+        # g_shard_sort_reduce_root is True.
+
+        self._comm_buffer_list.sort(key=lambda x: x._dst)
+
+        self._set_inner_opt_attr('_parameter_list', self._local_parameter_list)
+        self._set_inner_opt_attr('_param_groups', self._local_parameter_list)
+
+        # Ensure pp_overlap and comm_overlap are not both True
+        assert not (self.pp_overlap and self.comm_overlap), (
+            "pp_overlap and comm_overlap should not be True at the same time"
+        )
+
+        # Determine the use of pipeline parallelism
+        self._use_pipeline_parallel = strategy.hybrid_configs["pp_degree"] > 1
 
         # Register reduce overlap hook if comm_overlap is used without pp_overlap
         if not self.pp_overlap and self.comm_overlap:
@@ -808,11 +891,14 @@ class DygraphShardingOptimizerV2:
                 params.sort(key=lambda x: str(x.dtype))
 
         group_idx = 0
+        enable_offload_all_opt = self.offload_opt_buffer_size < 0
+        offload_buffer_size = self.offload_opt_buffer_size
         for color, params in color_dict.items():
             g_color = color[0]
             g_group = color[1]
             logger.info(f"Tensor Fusion Color {g_color} and Group {g_group}: ")
             var_groups = assign_group_by_size(params, group_size)
+            opt_states_sizes = get_group_size(params, group_size)
             for _, parameters in var_groups.items():
                 buffer = FusedCommBuffer(
                     group_idx,
@@ -827,6 +913,16 @@ class DygraphShardingOptimizerV2:
                     slice_params=self._slice_params,
                 )
                 group_idx += 1
+                if enable_offload_all_opt or offload_buffer_size > 0:
+                    for param in parameters:
+                        self._slice_params[param.name].is_offload_opt = True
+                    # here group_size is parameter size (GB)
+                    # optimizer states(float32) size is 6 times as much as parameter(bfloat16) size
+                    offload_buffer_size -= sum(opt_states_sizes)
+                else:
+                    for param in parameters:
+                        self._slice_params[param.name].is_offload_opt = False
+
                 self._comm_buffer_list.append(buffer)
 
                 if g_color not in self._color_to_comm_buffer_list.keys():

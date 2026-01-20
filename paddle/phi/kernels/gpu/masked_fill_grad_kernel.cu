@@ -42,7 +42,7 @@ __global__ void GPUMaskedFillXGradKernel(const T* out_grad,
                                          const int64_t input_len,
                                          const int64_t batch_size,
                                          T* x_grad) {
-  int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x);
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
   if (idx >= (input_len / VecSize)) {
     return;
@@ -73,7 +73,7 @@ __global__ void GPUMaskedFillValueGradKernel(const T* out_grad,
                                              const int64_t input_len,
                                              const int64_t batch_size,
                                              T* value_grad) {
-  int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x);
+  int64_t idx = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
   if (idx >= (input_len / VecSize)) {
     return;
@@ -243,7 +243,7 @@ void GPUMaskedFillGrad(const phi::GPUContext& dev_ctx,
 
   int64_t input_len = out_grad.numel();
   int64_t mask_len = mask.numel();
-  int batch_size = input_len / mask_len;
+  int64_t batch_size = input_len / mask_len;
 
   int vec_size = 8;
   vec_size = std::min(phi::GetVectorizedSize(out_grad_data), vec_size);
@@ -409,9 +409,9 @@ PD_REGISTER_KERNEL(masked_fill_grad,
                    int64_t,
                    int16_t,
                    uint8_t,
-                   phi::dtype::float16,
-                   phi::dtype::bfloat16,
-                   phi::dtype::complex<float>,
-                   phi::dtype::complex<double>) {
+                   phi::float16,
+                   phi::bfloat16,
+                   phi::complex64,
+                   phi::complex128) {
   kernel->InputAt(1).SetDataType(phi::DataType::BOOL);
 }
