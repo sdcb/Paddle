@@ -80,7 +80,14 @@ jobs:
       shell: bash
       run: |
         python -m pip install --upgrade pip
-        python -m pip install numpy protobuf wheel ninja
+        if [ "${{ runner.os }}" = "Windows" ]; then
+          # Newer ninja wheels occasionally regress on huge response files on Windows.
+          # Pin to a known-good version.
+          python -m pip install numpy protobuf wheel ninja==1.11.1.4
+        else
+          python -m pip install numpy protobuf wheel ninja
+        fi
+        ninja --version
 
     - name: Install system deps (Linux)
       if: ${{ runner.os == 'Linux' }}
