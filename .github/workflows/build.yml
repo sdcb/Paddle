@@ -3,53 +3,94 @@ on:
   push:
     branches:
       - sdcb/3.2
+      - sdcb/3.3
     paths:
       - .github/workflows/build.yml
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Run single matrix entry: <os>/<name> (e.g. windows-2022/openblas)"
+        required: false
+        default: "windows-2022/openblas"
 
 env:
-  PADDLE_VERSION: "3.2.2"
+  PADDLE_VERSION: "3.3.0"
 
 jobs:
+  prepare-matrix:
+    runs-on: ubuntu-22.04
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - name: Select build matrix
+        id: set
+        shell: bash
+        env:
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || 'windows-2022/openblas' }}
+        run: |
+          python - <<'PY'
+          import json, os
+
+          target = (os.environ.get('TARGET') or '').strip()
+          full = [
+            {"os": "windows-2022",     "name": "openblas_noavx",       "cmake_flags": "-DWITH_AVX=OFF -DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "openblas",             "cmake_flags": "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "mkldnn",               "cmake_flags": "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "cu129_cudnn910_sm61",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"61\"  -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "cu129_cudnn910_sm75",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"75\"  -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "cu129_cudnn910_sm86",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"86\"  -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "cu129_cudnn910_sm89",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"89\"  -DWITH_ONNXRUNTIME=ON"},
+            {"os": "windows-2022",     "name": "cu129_cudnn910_sm120", "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"120\" -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04",     "name": "openblas",             "cmake_flags": "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04",     "name": "mkldnn",               "cmake_flags": "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04",     "name": "openvino",             "cmake_flags": "-DWITH_MKL=ON -DWITH_OPENVINO=ON -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04-arm", "name": "openblas",             "cmake_flags": "-DWITH_ARM=ON -DCMAKE_CXX_FLAGS=\"-Wno-error=class-memaccess\""},
+            {"os": "macos-15",         "name": "openblas",             "cmake_flags": "-DWITH_ARM=ON"},
+          ]
+
+          if target:
+            if '/' not in target:
+              raise SystemExit(f"Invalid TARGET {target!r}, expected <os>/<name>")
+            os_name, name = target.split('/', 1)
+            full = [m for m in full if m.get('os') == os_name and m.get('name') == name]
+            if not full:
+              raise SystemExit(f"No matrix entry matched TARGET {target!r}")
+
+          include = json.dumps(full, separators=(',', ':'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
+            f.write(f"include={include}\n")
+          print('matrix entries:', len(full))
+          PY
+
   build-all:
+    needs: prepare-matrix
     runs-on: ${{ matrix.os }}
 
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - { os: windows-2022,     name: openblas_noavx,       cmake_flags: "-DWITH_AVX=OFF -DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON" }
-          - { os: windows-2022,     name: openblas,             cmake_flags: "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON" }
-          - { os: windows-2022,     name: mkldnn,               cmake_flags: "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON" }
-          - { os: windows-2022,     name: cu118_cudnn89_sm61,   cuda: 11.8.0, cudnn: 8.9.7.29, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"61\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu118_cudnn89_sm75,   cuda: 11.8.0, cudnn: 8.9.7.29, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"75\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu118_cudnn89_sm86,   cuda: 11.8.0, cudnn: 8.9.7.29, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"86\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu118_cudnn89_sm89,   cuda: 11.8.0, cudnn: 8.9.7.29, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"89\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu126_cudnn95_sm61,   cuda: 12.6.3, cudnn: 9.5.1.17, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"61\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu126_cudnn95_sm75,   cuda: 12.6.3, cudnn: 9.5.1.17, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"75\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu126_cudnn95_sm86,   cuda: 12.6.3, cudnn: 9.5.1.17, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"86\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu126_cudnn95_sm89,   cuda: 12.6.3, cudnn: 9.5.1.17, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"89\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu129_cudnn910_sm61,  cuda: 12.9.0, cudnn: 9.10.1.4, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"61\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu129_cudnn910_sm75,  cuda: 12.9.0, cudnn: 9.10.1.4, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"75\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu129_cudnn910_sm86,  cuda: 12.9.0, cudnn: 9.10.1.4, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"86\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu129_cudnn910_sm89,  cuda: 12.9.0, cudnn: 9.10.1.4, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"89\"  -DWITH_ONNXRUNTIME=ON"   }
-          - { os: windows-2022,     name: cu129_cudnn910_sm120, cuda: 12.9.0, cudnn: 9.10.1.4, cmake_flags: "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"120\" -DWITH_ONNXRUNTIME=ON" }
-          - { os: ubuntu-22.04,     name: openblas,             cmake_flags: "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON" }
-          - { os: ubuntu-22.04,     name: mkldnn,               cmake_flags: "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON" }
-          - { os: ubuntu-22.04,     name: openvino,             cmake_flags: "-DWITH_MKL=ON -DWITH_OPENVINO=ON -DWITH_ONNXRUNTIME=ON" }
-          - { os: ubuntu-22.04-arm, name: openblas,             cmake_flags: "-DWITH_ARM=ON -DCMAKE_CXX_FLAGS=\"-Wno-error=class-memaccess\"" }
-          - { os: macos-15,         name: openblas,             cmake_flags: "-DWITH_ARM=ON" }
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.include) }}
     steps:
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
     - name: Setup dependencies
       shell: bash
       run: |
-        if [ "${{ runner.os }}" == "macOS" ]; then
-          pip install numpy protobuf wheel ninja --break-system-packages
-        else
-          pip install numpy protobuf wheel ninja
-        fi
+        python -m pip install --upgrade pip
+        python -m pip install numpy protobuf wheel ninja
+
+    - name: Install system deps (Linux)
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
 
     - uses: Jimver/cuda-toolkit@v0.2.24
-      if: ${{ matrix.cuda != '' }}
+      if: ${{ matrix.cuda }}
       id: cuda-toolkit
       with:
         method: network
@@ -70,7 +111,7 @@ jobs:
         log-file-suffix: ${{ runner.os }}.txt
     
     - name: Download cuDNN
-      if: ${{ matrix.cudnn != '' }}
+      if: ${{ matrix.cudnn }}
       shell: pwsh
       run: |
         $cudaMajor = '${{ matrix.cuda }}'.Split('.')[0]
