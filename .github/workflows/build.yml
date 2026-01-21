@@ -167,59 +167,55 @@ jobs:
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        script=$(
-          cat <<'EOS'
-          set -eux
-          if [ -f /etc/oracle-release ]; then
-            cat /etc/oracle-release
-          fi
+        docker exec builder bash -lc "set -eux
+        if [ -f /etc/oracle-release ]; then
+          cat /etc/oracle-release
+        fi
 
-          if command -v yum >/dev/null 2>&1; then
-            yum install -y yum-utils || true
-            yum install -y oracle-epel-release-el7 || true
-            yum-config-manager --enable ol7_developer_EPEL || true
-            yum-config-manager --enable ol7_developer_epel || true
-          fi
-          EOS
-        )
-        docker exec builder bash -lc "$script"
+        if command -v yum >/dev/null 2>&1; then
+          yum install -y yum-utils || true
+          yum install -y oracle-epel-release-el7 || true
+          yum-config-manager --enable ol7_developer_EPEL || true
+          yum-config-manager --enable ol7_developer_epel || true
+        fi"
 
     - name: Install Build Dependencies (Linux in Docker)
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        script=$(
-          cat <<'EOS'
-          set -eux
-          yum makecache -y || true
+        docker exec builder bash -lc "set -eux
+        yum makecache -y || true
 
-          # Basic toolchain
-          yum install -y git make which file tar xz bzip2 gzip || true
-          yum install -y gcc gcc-c++ || true
+        # Basic toolchain
+        yum install -y git make which file tar xz bzip2 gzip || true
+        yum install -y gcc gcc-c++ || true
 
-          # Newer compilers (best-effort; different repos have different names)
-          yum install -y oraclelinux-developer-release-el7 || true
-          yum install -y oracle-softwarecollection-release-el7 || true
-          yum install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils || true
-          yum install -y gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ gcc-toolset-10-binutils || true
-          yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-binutils || true
-          yum install -y devtoolset-10-gcc devtoolset-10-gcc-c++ devtoolset-10-binutils || true
-          yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-binutils || true
+        # Newer compilers (best-effort; repo/package names vary)
+        yum install -y oraclelinux-developer-release-el7 || true
+        yum install -y oracle-softwarecollection-release-el7 || true
+        yum install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils || true
+        yum install -y gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ gcc-toolset-10-binutils || true
+        yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-binutils || true
+        yum install -y devtoolset-10-gcc devtoolset-10-gcc-c++ devtoolset-10-binutils || true
+        yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-binutils || true
 
-          # CMake + Ninja
-          yum install -y cmake3 || true
-          yum install -y ninja-build || yum install -y ninja || true
+        # CMake + Ninja
+        yum install -y cmake3 || true
+        yum install -y ninja-build || yum install -y ninja || true
 
-          # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
-          yum install -y python3 python3-pip || true
-          ln -sf /usr/bin/cmake3 /usr/local/bin/cmake || true
+        # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
+        yum install -y python3 python3-pip || true
+        ln -sf /usr/bin/cmake3 /usr/local/bin/cmake || true
 
-          cmake --version || true
-          ninja --version || true
-          python3 --version || true
-          EOS
-        )
-        docker exec builder bash -lc "$script"
+        command -v gcc
+        command -v g++
+        command -v cmake
+        command -v ninja
+        command -v python3
+
+        cmake --version
+        ninja --version
+        python3 --version"
 
     - uses: ilammy/msvc-dev-cmd@v1
       if: ${{ runner.os == 'Windows' }}
@@ -252,36 +248,26 @@ jobs:
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        script=$(
-          cat <<EOS
-          set -eux
-          if [ -f /opt/rh/gcc-toolset-11/enable ]; then source /opt/rh/gcc-toolset-11/enable; fi
-          if [ -f /opt/rh/gcc-toolset-10/enable ]; then source /opt/rh/gcc-toolset-10/enable; fi
-          if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi
-          if [ -f /opt/rh/devtoolset-10/enable ]; then source /opt/rh/devtoolset-10/enable; fi
-          if [ -f /opt/rh/devtoolset-9/enable ]; then source /opt/rh/devtoolset-9/enable; fi
-          gcc --version || true
-          cmake --version
-          ninja --version
+        docker exec builder bash -lc "set -eux
+        if [ -f /opt/rh/gcc-toolset-11/enable ]; then source /opt/rh/gcc-toolset-11/enable; fi
+        if [ -f /opt/rh/gcc-toolset-10/enable ]; then source /opt/rh/gcc-toolset-10/enable; fi
+        if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi
+        if [ -f /opt/rh/devtoolset-10/enable ]; then source /opt/rh/devtoolset-10/enable; fi
+        if [ -f /opt/rh/devtoolset-9/enable ]; then source /opt/rh/devtoolset-9/enable; fi
+        gcc --version || true
+        cmake --version
+        ninja --version
 
-          python3 -m pip install --upgrade pip
-          python3 -m pip install numpy protobuf wheel
+        python3 -m pip install --upgrade pip
+        python3 -m pip install numpy protobuf wheel
 
-          mkdir -p ./paddle-src/build
-          mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/inconsistent
-          mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/legacy
+        mkdir -p ./paddle-src/build
+        mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/inconsistent
+        mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/legacy
 
-          cd ./paddle-src/build
-          cmake .. -GNinja \
-            ${{ matrix.cmake_flags }} \
-            -DON_INFER=ON \
-            -DWITH_PYTHON=OFF \
-            -DWITH_UNITY_BUILD=ON
-
-          ninja all
-          EOS
-        )
-        docker exec builder bash -lc "$script"
+        cd ./paddle-src/build
+        cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON
+        ninja all"
 
     - name: Stop Docker Container (Linux)
       if: ${{ runner.os == 'Linux' && matrix.docker_image && always() }}
