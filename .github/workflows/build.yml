@@ -11,7 +11,7 @@ on:
       target:
         description: "Run single matrix entry: <os>/<name> (e.g. windows-2022/openblas)"
         required: false
-        default: "windows-2022/openblas"
+        default: ""
 
 env:
   PADDLE_VERSION: "3.3.0"
@@ -26,7 +26,7 @@ jobs:
         id: set
         shell: bash
         env:
-          TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || 'windows-2022/openblas' }}
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || '' }}
         run: |
           python - <<'PY'
           import json, os
