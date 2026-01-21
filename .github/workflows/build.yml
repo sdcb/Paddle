@@ -41,10 +41,10 @@ jobs:
             {"os": "windows-2022",     "name": "cu129_cudnn910_sm86",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"86\"  -DWITH_ONNXRUNTIME=ON"},
             {"os": "windows-2022",     "name": "cu129_cudnn910_sm89",  "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"89\"  -DWITH_ONNXRUNTIME=ON"},
             {"os": "windows-2022",     "name": "cu129_cudnn910_sm120", "cuda": "12.9.0", "cudnn": "9.10.1.4", "cmake_flags": "-DWITH_GPU=ON -DCUDA_ARCH_NAME=Manual -DCUDA_ARCH_BIN=\"120\" -DWITH_ONNXRUNTIME=ON"},
-            {"os": "ubuntu-22.04",     "name": "openblas",             "cmake_flags": "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON"},
-            {"os": "ubuntu-22.04",     "name": "mkldnn",               "cmake_flags": "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON"},
-            {"os": "ubuntu-22.04",     "name": "openvino",             "cmake_flags": "-DWITH_MKL=ON -DWITH_OPENVINO=ON -DWITH_ONNXRUNTIME=ON"},
-            {"os": "ubuntu-22.04-arm", "name": "openblas",             "cmake_flags": "-DWITH_ARM=ON -DCMAKE_CXX_FLAGS=\"-Wno-error=class-memaccess\""},
+            {"os": "ubuntu-22.04",     "name": "openblas",             "docker_image": "oraclelinux:7", "cmake_flags": "-DWITH_MKL=OFF -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04",     "name": "mkldnn",               "docker_image": "oraclelinux:7", "cmake_flags": "-DWITH_MKL=ON -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04",     "name": "openvino",             "docker_image": "oraclelinux:7", "cmake_flags": "-DWITH_MKL=ON -DWITH_OPENVINO=ON -DWITH_ONNXRUNTIME=ON"},
+            {"os": "ubuntu-22.04-arm", "name": "openblas",             "docker_image": "oraclelinux:7", "cmake_flags": "-DWITH_ARM=ON -DCMAKE_CXX_FLAGS=-Wno-error=class-memaccess"},
             {"os": "macos-15",         "name": "openblas",             "cmake_flags": "-DWITH_ARM=ON"},
           ]
 
@@ -145,12 +145,89 @@ jobs:
       with:
         path: paddle-src
 
+    - name: Pull Docker Image (Linux)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image }}
+      shell: bash
+      run: |
+        docker --version
+        docker pull "${{ matrix.docker_image }}"
+
+    - name: Start Docker Container (Linux)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image }}
+      shell: bash
+      run: |
+        docker rm -f builder 2>/dev/null || true
+        docker run -d --name builder \
+          -v "$GITHUB_WORKSPACE:/workspace" \
+          -w /workspace \
+          "${{ matrix.docker_image }}" \
+          tail -f /dev/null
+
+    - name: Initialize Docker Container (Linux)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image }}
+      shell: bash
+      run: |
+        script=$(
+          cat <<'EOS'
+          set -eux
+          if [ -f /etc/oracle-release ]; then
+            cat /etc/oracle-release
+          fi
+
+          if command -v yum >/dev/null 2>&1; then
+            yum install -y yum-utils || true
+            yum install -y oracle-epel-release-el7 || true
+            yum-config-manager --enable ol7_developer_EPEL || true
+            yum-config-manager --enable ol7_developer_epel || true
+          fi
+          EOS
+        )
+        docker exec builder bash -lc "$script"
+
+    - name: Install Build Dependencies (Linux in Docker)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image }}
+      shell: bash
+      run: |
+        script=$(
+          cat <<'EOS'
+          set -eux
+          yum makecache -y || true
+
+          # Basic toolchain
+          yum install -y git make which file tar xz bzip2 gzip || true
+          yum install -y gcc gcc-c++ || true
+
+          # Newer compilers (best-effort; different repos have different names)
+          yum install -y oraclelinux-developer-release-el7 || true
+          yum install -y oracle-softwarecollection-release-el7 || true
+          yum install -y gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ gcc-toolset-11-binutils || true
+          yum install -y gcc-toolset-10-gcc gcc-toolset-10-gcc-c++ gcc-toolset-10-binutils || true
+          yum install -y devtoolset-11-gcc devtoolset-11-gcc-c++ devtoolset-11-binutils || true
+          yum install -y devtoolset-10-gcc devtoolset-10-gcc-c++ devtoolset-10-binutils || true
+          yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-binutils || true
+
+          # CMake + Ninja
+          yum install -y cmake3 || true
+          yum install -y ninja-build || yum install -y ninja || true
+
+          # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
+          yum install -y python3 python3-pip || true
+          ln -sf /usr/bin/cmake3 /usr/local/bin/cmake || true
+
+          cmake --version || true
+          ninja --version || true
+          python3 --version || true
+          EOS
+        )
+        docker exec builder bash -lc "$script"
+
     - uses: ilammy/msvc-dev-cmd@v1
       if: ${{ runner.os == 'Windows' }}
       with:
         toolset: '14.29'
 
     - name: Configure with CMake
+      if: ${{ runner.os != 'Linux' }}
       shell: pwsh
       run: |
         mkdir ./paddle-src/build
@@ -166,9 +243,51 @@ jobs:
           -DWITH_UNITY_BUILD=ON
 
     - name: Build with Ninja
+      if: ${{ runner.os != 'Linux' }}
       run: |
         cd ./paddle-src/build
         ninja all
+
+    - name: Configure and Build in Docker (Linux)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image }}
+      shell: bash
+      run: |
+        script=$(
+          cat <<EOS
+          set -eux
+          if [ -f /opt/rh/gcc-toolset-11/enable ]; then source /opt/rh/gcc-toolset-11/enable; fi
+          if [ -f /opt/rh/gcc-toolset-10/enable ]; then source /opt/rh/gcc-toolset-10/enable; fi
+          if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi
+          if [ -f /opt/rh/devtoolset-10/enable ]; then source /opt/rh/devtoolset-10/enable; fi
+          if [ -f /opt/rh/devtoolset-9/enable ]; then source /opt/rh/devtoolset-9/enable; fi
+          gcc --version || true
+          cmake --version
+          ninja --version
+
+          python3 -m pip install --upgrade pip
+          python3 -m pip install numpy protobuf wheel
+
+          mkdir -p ./paddle-src/build
+          mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/inconsistent
+          mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/legacy
+
+          cd ./paddle-src/build
+          cmake .. -GNinja \
+            ${{ matrix.cmake_flags }} \
+            -DON_INFER=ON \
+            -DWITH_PYTHON=OFF \
+            -DWITH_UNITY_BUILD=ON
+
+          ninja all
+          EOS
+        )
+        docker exec builder bash -lc "$script"
+
+    - name: Stop Docker Container (Linux)
+      if: ${{ runner.os == 'Linux' && matrix.docker_image && always() }}
+      shell: bash
+      run: |
+        docker rm -f builder || true
 
     - name: Show build files
       shell: bash
