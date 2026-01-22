@@ -369,7 +369,7 @@ jobs:
         # (Docker builds run as root; host upload/patchelf runs as runner user.)
         HOST_UID=$(stat -c %u /workspace)
         HOST_GID=$(stat -c %g /workspace)
-        chown -R "$HOST_UID:$HOST_GID" ./paddle_inference_install_dir ./paddle_inference_c_install_dir 2>/dev/null || true
+        chown -R "$HOST_UID:$HOST_GID" ./paddle_inference_install_dir ./paddle_inference_c_install_dir /workspace/paddle-src/build 2>/dev/null || true
         EOS
 
     - name: Stop Docker Container (Linux)
