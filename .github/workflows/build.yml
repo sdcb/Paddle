@@ -373,11 +373,23 @@ jobs:
         cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON -DPYTHON_EXECUTABLE=/usr/local/bin/python3
         ninja all
 
-        # Make generated artifacts writable by the host runner.
-        # (Docker builds run as root; host upload/patchelf runs as runner user.)
-        HOST_UID=$(stat -c %u /workspace)
-        HOST_GID=$(stat -c %g /workspace)
-        chown -R "$HOST_UID:$HOST_GID" ./paddle_inference_install_dir ./paddle_inference_c_install_dir /workspace/paddle-src/build 2>/dev/null || true
+        # Post-process for Linux inside container (avoid host write-permission issues)
+        cp ./paddle_inference_install_dir/paddle/lib/*common.* ./paddle_inference_c_install_dir/paddle/lib/ || true
+        cp ./paddle_inference_install_dir/paddle/lib/*phi* ./paddle_inference_c_install_dir/paddle/lib/ || true
+
+        LIB=./paddle_inference_c_install_dir/paddle/lib/libpaddle_inference_c.so
+        echo "Before RPATH:" && patchelf --print-rpath "$LIB" || true
+        patchelf --set-rpath '$ORIGIN' "$LIB"
+        echo "After  RPATH:" && patchelf --print-rpath "$LIB" || true
+
+        if find /workspace -type f -name 'libmklml_intel.so' -print -quit | grep -q .; then
+          echo "libmklml_intel.so found, patching libpaddle_inference_c.so..."
+          patchelf --add-needed libmklml_intel.so "$LIB" || true
+        else
+          echo "libmklml_intel.so not found, skip patchelf add-needed."
+        fi
+
+        chmod -R a+rX ./paddle_inference_install_dir ./paddle_inference_c_install_dir || true
         EOS
 
     - name: Stop Docker Container (Linux)
@@ -398,7 +410,7 @@ jobs:
         path: ./paddle-src/build/paddle_inference_install_dir/*
     
     - name: Patch RPATH / install-name for Paddle
-      if: ${{ runner.os != 'Windows' }}
+      if: ${{ runner.os != 'Windows' && !(runner.os == 'Linux' && matrix.docker_image) }}
       shell: bash
       run: |    
         case "${{ runner.os }}" in    
@@ -441,6 +453,7 @@ jobs:
         echo "RPATH / LC_RPATH patched successfully."
 
     - name: Post process paddle_inference_install_dir
+      if: ${{ !(runner.os == 'Linux' && matrix.docker_image) }}
       shell: bash
       run: |
         cp ./paddle-src/build/paddle_inference_install_dir/paddle/lib/*common.* ./paddle-src/build/paddle_inference_c_install_dir/paddle/lib/
