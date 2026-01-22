@@ -12,6 +12,10 @@ on:
         description: "Run single matrix entry: <os>/<name> (e.g. windows-2022/openblas)"
         required: false
         default: ""
+      linux_only:
+        description: "Only run Linux docker jobs (for faster debugging)"
+        required: false
+        default: "false"
 
 env:
   PADDLE_VERSION: "3.3.0"
@@ -27,6 +31,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.target || '' }}
+          LINUX_ONLY: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.linux_only || 'false' }}
         run: |
           python - <<'PY'
           import json, os
@@ -56,6 +61,11 @@ jobs:
             if not full:
               raise SystemExit(f"No matrix entry matched TARGET {target!r}")
 
+          # Optional: debug only Linux docker builds
+          linux_only = (os.environ.get('LINUX_ONLY') or '').strip().lower() in ('1','true','yes','on')
+          if linux_only:
+            full = [m for m in full if m.get('os','').startswith('ubuntu-')]
+
           include = json.dumps(full, separators=(',', ':'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as f:
             f.write(f"include={include}\n")
@@ -67,7 +77,8 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
-      fail-fast: false
+      # For workflow_dispatch (debug runs) fail fast to save time.
+      fail-fast: ${{ github.event_name == 'workflow_dispatch' }}
       matrix:
         include: ${{ fromJSON(needs.prepare-matrix.outputs.include) }}
     steps:
@@ -173,7 +184,9 @@ jobs:
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        docker exec builder bash -lc "set -eux
+        docker exec -i builder bash -s <<'EOS'
+        set -eux
+
         if [ -f /etc/oracle-release ]; then
           cat /etc/oracle-release
         fi
@@ -183,13 +196,15 @@ jobs:
           yum install -y oracle-epel-release-el7 || true
           yum-config-manager --enable ol7_developer_EPEL || true
           yum-config-manager --enable ol7_developer_epel || true
-        fi"
+        fi
+        EOS
 
     - name: Install Build Dependencies (Linux in Docker)
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        docker exec builder bash -lc "set -eux
+        docker exec -i builder bash -s <<'EOS'
+        set -eux
         yum makecache -y || true
 
         # Basic toolchain
@@ -208,9 +223,7 @@ jobs:
         # CMake + Ninja
         # Paddle 3.3 requires CMake >= 3.18; EL7 repos often provide 3.17.
         # Use official Kitware prebuilt CMake to keep glibc low (CentOS7 compatible).
-        yum install -y cmake3 || true
         yum install -y ninja-build || yum install -y ninja || true
-
         yum install -y curl ca-certificates || true
 
         CMAKE_VER=3.27.9
@@ -232,7 +245,6 @@ jobs:
 
         # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
         yum install -y python3 python3-pip || true
-        ln -sf /usr/bin/cmake3 /usr/local/bin/cmake || true
 
         command -v gcc
         command -v g++
@@ -242,7 +254,8 @@ jobs:
 
         cmake --version
         ninja --version
-        python3 --version"
+        python3 --version
+        EOS
 
     - uses: ilammy/msvc-dev-cmd@v1
       if: ${{ runner.os == 'Windows' }}
@@ -275,7 +288,8 @@ jobs:
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
       run: |
-        docker exec builder bash -lc "set -eux
+        docker exec -i builder bash -s <<EOS
+        set -eux
         if [ -f /opt/rh/gcc-toolset-11/enable ]; then source /opt/rh/gcc-toolset-11/enable; fi
         if [ -f /opt/rh/gcc-toolset-10/enable ]; then source /opt/rh/gcc-toolset-10/enable; fi
         if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi
@@ -294,7 +308,8 @@ jobs:
 
         cd ./paddle-src/build
         cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON
-        ninja all"
+        ninja all
+        EOS
 
     - name: Stop Docker Container (Linux)
       if: ${{ runner.os == 'Linux' && matrix.docker_image && always() }}
