@@ -181,6 +181,8 @@ jobs:
         docker run -d --name builder \
           -v "$GITHUB_WORKSPACE:/workspace" \
           -w /workspace \
+          -e GITHUB_TOKEN="${{ github.token }}" \
+          -e GITHUB_API_URL="${{ github.api_url }}" \
           "${{ matrix.docker_image }}" \
           tail -f /dev/null
 
@@ -271,9 +273,15 @@ jobs:
         if not suffix:
           raise SystemExit(f'unsupported arch: {arch}')
 
+        api_url = os.environ.get('GITHUB_API_URL') or 'https://api.github.com'
+        token = os.environ.get('GITHUB_TOKEN')
+        headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'paddle-build'}
+        if token:
+          headers['Authorization'] = f'Bearer {token}'
+
         req = urllib.request.Request(
-          'https://api.github.com/repos/indygreg/python-build-standalone/releases/latest',
-          headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'paddle-build'}
+          api_url.rstrip('/') + '/repos/indygreg/python-build-standalone/releases/latest',
+          headers=headers,
         )
         data = json.load(urllib.request.urlopen(req, timeout=60))
         assets = data.get('assets', [])
