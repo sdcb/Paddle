@@ -145,6 +145,12 @@ jobs:
       with:
         path: paddle-src
 
+    - name: Use GitHub mirror for pocketfft (avoid GitLab flakiness)
+      shell: bash
+      run: |
+        git config -f paddle-src/.gitmodules submodule.third_party/pocketfft.url https://github.com/mreineck/pocketfft.git
+        git -C paddle-src submodule sync --recursive
+
     - name: Pull Docker Image (Linux)
       if: ${{ runner.os == 'Linux' && matrix.docker_image }}
       shell: bash
@@ -200,8 +206,29 @@ jobs:
         yum install -y devtoolset-9-gcc devtoolset-9-gcc-c++ devtoolset-9-binutils || true
 
         # CMake + Ninja
+        # Paddle 3.3 requires CMake >= 3.18; EL7 repos often provide 3.17.
+        # Use official Kitware prebuilt CMake to keep glibc low (CentOS7 compatible).
         yum install -y cmake3 || true
         yum install -y ninja-build || yum install -y ninja || true
+
+        yum install -y curl ca-certificates || true
+
+        CMAKE_VER=3.27.9
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "x86_64" ]; then
+          CMAKE_PKG=cmake-$CMAKE_VER-linux-x86_64
+        elif [ "$ARCH" = "aarch64" ]; then
+          CMAKE_PKG=cmake-$CMAKE_VER-linux-aarch64
+        else
+          echo "Unsupported arch: $ARCH" >&2
+          exit 1
+        fi
+        curl -fsSL -o /tmp/cmake.tgz "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VER/$CMAKE_PKG.tar.gz"
+        rm -rf /opt/cmake && mkdir -p /opt/cmake
+        tar -xzf /tmp/cmake.tgz -C /opt/cmake --strip-components=1
+        ln -sf /opt/cmake/bin/cmake /usr/local/bin/cmake
+        ln -sf /opt/cmake/bin/ctest /usr/local/bin/ctest
+        ln -sf /opt/cmake/bin/cpack /usr/local/bin/cpack
 
         # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
         yum install -y python3 python3-pip || true
