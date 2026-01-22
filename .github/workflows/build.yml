@@ -21,7 +21,8 @@ env:
   PADDLE_VERSION: "3.3.0"
 
 concurrency:
-  group: paddle-build-${{ github.ref }}-${{ github.event_name }}-${{ github.event.inputs.target || 'all' }}
+  # Keep debug runs (linux_only / target) from cancelling full-matrix runs.
+  group: paddle-build-${{ github.ref }}-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.target || 'all') || 'all' }}-${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.linux_only || 'false') || 'false' }}
   cancel-in-progress: true
 
 jobs:
