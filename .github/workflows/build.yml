@@ -307,7 +307,7 @@ jobs:
         mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/legacy
 
         cd ./paddle-src/build
-        cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON
+        cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON -DPYTHON_EXECUTABLE=/usr/bin/python3
         ninja all
         EOS
 
