@@ -212,7 +212,7 @@ jobs:
         yum makecache -y || true
 
         # Basic toolchain
-        yum install -y git make which file tar xz bzip2 gzip || true
+        yum install -y git make which file tar xz bzip2 gzip patch || true
         yum install -y gcc gcc-c++ || true
 
         # Newer compilers (best-effort; repo/package names vary)
