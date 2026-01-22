@@ -213,6 +213,7 @@ jobs:
 
         # Basic toolchain
         yum install -y git make which file tar xz bzip2 gzip patch || true
+        yum install -y patchelf || true
         yum install -y gcc gcc-c++ || true
 
         # Newer compilers (best-effort; repo/package names vary)
@@ -363,6 +364,12 @@ jobs:
         cd ./paddle-src/build
         cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON -DPYTHON_EXECUTABLE=/usr/local/bin/python3
         ninja all
+
+        # Make generated artifacts writable by the host runner.
+        # (Docker builds run as root; host upload/patchelf runs as runner user.)
+        HOST_UID=$(stat -c %u /workspace)
+        HOST_GID=$(stat -c %g /workspace)
+        chown -R "$HOST_UID:$HOST_GID" ./paddle_inference_install_dir ./paddle_inference_c_install_dir 2>/dev/null || true
         EOS
 
     - name: Stop Docker Container (Linux)
@@ -391,6 +398,7 @@ jobs:
             echo "Before:"
             LIB=./paddle-src/build/paddle_inference_c_install_dir/paddle/lib/libpaddle_inference_c.so
             patchelf --print-rpath $LIB || true    
+            chmod u+w $LIB || true
             patchelf --set-rpath '$ORIGIN' $LIB
     
             echo "After :"
