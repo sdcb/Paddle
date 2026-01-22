@@ -355,6 +355,7 @@ jobs:
         # $VARS / $(cmd) before the script reaches the container.
         docker exec -i builder bash -s <<'EOS'
         set -eux
+        export MANPATH="${MANPATH:-}"
         if [ -f /opt/rh/gcc-toolset-11/enable ]; then source /opt/rh/gcc-toolset-11/enable; fi
         if [ -f /opt/rh/gcc-toolset-10/enable ]; then source /opt/rh/gcc-toolset-10/enable; fi
         if [ -f /opt/rh/devtoolset-11/enable ]; then source /opt/rh/devtoolset-11/enable; fi
