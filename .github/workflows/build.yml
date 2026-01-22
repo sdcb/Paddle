@@ -20,6 +20,10 @@ on:
 env:
   PADDLE_VERSION: "3.3.0"
 
+concurrency:
+  group: paddle-build-${{ github.ref }}-${{ github.event_name }}-${{ github.event.inputs.target || 'all' }}
+  cancel-in-progress: true
+
 jobs:
   prepare-matrix:
     runs-on: ubuntu-22.04
@@ -243,8 +247,57 @@ jobs:
         ln -sf /opt/cmake/bin/ctest /usr/local/bin/ctest
         ln -sf /opt/cmake/bin/cpack /usr/local/bin/cpack
 
-        # Python (Paddle build uses Python for code generation even with WITH_PYTHON=OFF)
+        # Python (Paddle build uses Python for codegen even with WITH_PYTHON=OFF)
         yum install -y python3 python3-pip || true
+
+        # EL7 python3 is usually 3.6 which is too old for Paddle 3.3 codegen.
+        # Install a newer CPython built for glibc (CentOS7 compatible) from python-build-standalone.
+        python3 - <<'PY'
+        import sys
+        raise SystemExit(0 if sys.version_info >= (3, 9) else 1)
+        PY
+
+        if [ $? -ne 0 ]; then
+          python3 - <<'PY' > /tmp/py_url
+        import json, os, urllib.request
+
+        arch = os.uname().machine
+        suffix = {
+          'x86_64': 'x86_64-unknown-linux-gnu-install_only.tar.gz',
+          'aarch64': 'aarch64-unknown-linux-gnu-install_only.tar.gz',
+        }.get(arch)
+        if not suffix:
+          raise SystemExit(f'unsupported arch: {arch}')
+
+        req = urllib.request.Request(
+          'https://api.github.com/repos/indygreg/python-build-standalone/releases/latest',
+          headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'paddle-build'}
+        )
+        data = json.load(urllib.request.urlopen(req, timeout=60))
+        assets = data.get('assets', [])
+
+        def pick(major_minor):
+          for a in assets:
+            n = a.get('name', '')
+            if n.startswith(f'cpython-{major_minor}') and n.endswith(suffix):
+              return a['browser_download_url']
+          return None
+
+        # prefer 3.10 because it is widely available for glibc builds
+        url = pick('3.10') or pick('3.11') or pick('3.9')
+        if not url:
+          raise SystemExit('no suitable python-build-standalone asset found')
+        print(url)
+        PY
+
+          curl -fsSL -o /tmp/python.tgz "$(cat /tmp/py_url)"
+          rm -rf /opt/python && mkdir -p /opt/python
+          tar -xzf /tmp/python.tgz -C /opt/python --strip-components=1
+          /opt/python/bin/python3 -m ensurepip || true
+          /opt/python/bin/python3 -m pip install --upgrade pip setuptools wheel
+          ln -sf /opt/python/bin/python3 /usr/local/bin/python3
+          ln -sf /opt/python/bin/pip3 /usr/local/bin/pip3
+        fi
 
         command -v gcc
         command -v g++
@@ -307,7 +360,7 @@ jobs:
         mkdir -p ./paddle-src/build/paddle/phi/ops/yaml/legacy
 
         cd ./paddle-src/build
-        cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON -DPYTHON_EXECUTABLE=/usr/bin/python3
+        cmake .. -GNinja ${{ matrix.cmake_flags }} -DON_INFER=ON -DWITH_PYTHON=OFF -DWITH_UNITY_BUILD=ON -DPYTHON_EXECUTABLE=/usr/local/bin/python3
         ninja all
         EOS
 
